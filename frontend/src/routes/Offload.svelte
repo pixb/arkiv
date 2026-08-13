@@ -23,6 +23,8 @@
   import Mono from '../lib/Mono.svelte'
   import Eyebrow from '../lib/Eyebrow.svelte'
   import { resolvedTheme } from '../lib/prefs.js'
+  import { pickFolder, canPickFolder } from '../lib/pickFolder.js'
+  import { pushToast } from '../lib/toast.js'
 
   let src = ''
   let organize = ''
@@ -59,6 +61,32 @@
 
   function addDst() { dsts = [...dsts, ''] }
   function removeDst(i) { dsts = dsts.filter((_, j) => j !== i); if (!dsts.length) dsts = [''] }
+
+  // Browse buttons only exist in the desktop shell (see lib/pickFolder.js).
+  // Cancel returns null and must leave the field untouched — a card path someone
+  // typed is not worth losing to a stray Escape.
+  //
+  // Errors are toasted rather than left to an unhandled rejection. The first cut
+  // had no catch, so when the chooser did not come up the button looked simply
+  // dead: no dialog, no message, nothing in the UI to act on. A picker that
+  // fails must say so — silence is the one outcome that cannot be debugged.
+  const canBrowse = canPickFolder()
+  async function browse(current) {
+    try {
+      return await pickFolder(current)
+    } catch (e) {
+      pushToast(`資料夾選擇器打不開：${e?.name || ''} ${e?.message || e}`, 'error')
+      return null
+    }
+  }
+  async function browseSrc() {
+    const p = await browse(src)
+    if (p) src = p
+  }
+  async function browseDst(i) {
+    const p = await browse(dsts[i])
+    if (p) dsts[i] = p
+  }
 
   async function doPreview() {
     if (!src.trim()) { err = '請先填來源路徑'; return }
@@ -166,6 +194,9 @@
           <Eyebrow>Source · card / folder</Eyebrow>
           <div class="srcrow">
             <input class="ak-input" placeholder="/Volumes/CARD/DCIM  或  ~/footage" bind:value={src} spellcheck="false" on:keydown={(e) => e.key === 'Enter' && doPreview()} />
+            {#if canBrowse}
+              <button class="seg" on:click={browseSrc} disabled={phase === 'running'} title="選擇資料夾">⋯</button>
+            {/if}
             <button class="ak-btn" on:click={doPreview} disabled={phase === 'previewing' || phase === 'running'}>{phase === 'previewing' ? 'reading…' : 'Preview'}</button>
           </div>
         </div>
@@ -181,6 +212,9 @@
           {#each dsts as d, i}
             <div class="dstrow">
               <input class="ak-input" placeholder={`/Volumes/Backup${i + 1}`} bind:value={dsts[i]} spellcheck="false" disabled={phase === 'running'} />
+              {#if canBrowse}
+                <button class="seg" on:click={() => browseDst(i)} disabled={phase === 'running'} title="選擇資料夾">⋯</button>
+              {/if}
               {#if i === dsts.length - 1}
                 <button class="seg" on:click={addDst} disabled={phase === 'running'} title="add destination">+</button>
               {:else}

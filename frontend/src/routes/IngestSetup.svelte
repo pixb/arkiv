@@ -17,6 +17,8 @@
   import Mono from '../lib/Mono.svelte'
   import Eyebrow from '../lib/Eyebrow.svelte'
   import { resolvedTheme } from '../lib/prefs.js'
+  import { pickFolder, canPickFolder } from '../lib/pickFolder.js'
+  import { pushToast } from '../lib/toast.js'
 
   let path = ''
   let limit = 0
@@ -39,6 +41,18 @@
   let scanning = false, starting = false, err = '', notice = ''
 
   $: gb = manifest ? (manifest.total_size_mb / 1024).toFixed(1) : null
+
+  // Native folder chooser, same contract as Offload's: desktop shell only, and a
+  // cancel leaves the field alone rather than clearing a path someone typed.
+  const canBrowse = canPickFolder()
+  async function browsePath() {
+    try {
+      const p = await pickFolder(path)
+      if (p) path = p
+    } catch (e) {
+      pushToast(`資料夾選擇器打不開：${e?.name || ''} ${e?.message || e}`, 'error')
+    }
+  }
 
   async function scan() {
     if (!path.trim()) { err = '請先填來源資料夾路徑'; return }
@@ -122,6 +136,9 @@
           <Eyebrow>Source · folder</Eyebrow>
           <div class="srcrow">
             <input class="ak-input" placeholder="/Volumes/CARD/DCIM  或  ~/footage" bind:value={path} spellcheck="false" on:keydown={(e)=>e.key==='Enter'&&scan()} />
+            {#if canBrowse}
+              <button class="seg" on:click={browsePath} disabled={scanning} title="選擇資料夾">⋯</button>
+            {/if}
             <button class="ak-btn" on:click={scan} disabled={scanning}>{scanning ? 'scanning…' : 'Scan'}</button>
           </div>
         </div>
@@ -233,7 +250,10 @@
   .field { display: flex; flex-direction: column; gap: 10px; }
   .srcrow { display: flex; gap: 10px; align-items: flex-end; }
   .num { width: 80px; flex: 0 0 80px; }
-  .sel { flex: 0 0 196px; width: 196px; font-size: 11.5px; font-family: var(--ak-mono); background: transparent; color: var(--ink); border: 1px solid var(--rule-hi); border-radius: 0; padding: 6px 8px; cursor: pointer; }
+  /* No `background` here on purpose: a class beats the bare `select` rule in
+     app.css, so re-declaring `transparent` would put the grey-white default
+     popup back. Colour comes from that global rule. */
+  .sel { flex: 0 0 196px; width: 196px; font-size: 11.5px; font-family: var(--ak-mono); color: var(--ink); border: 1px solid var(--rule-hi); border-radius: 0; padding: 6px 8px; cursor: pointer; }
   .sel:focus { outline: none; border-color: var(--ink); }
 
   .optrow { display: flex; align-items: center; gap: 14px; }
