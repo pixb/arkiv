@@ -201,7 +201,8 @@ def media_pool(
 def shoot_date_facets(
     _tok: dict = Depends(require_scopes("videos_read")),
 ):
-    """Year buckets for browsing footage by when it was SHOT.
+    """Year buckets — each carrying its shoot days — for browsing footage by when it
+    was SHOT.
 
     Grouped on `creation_date` (EXIF CreateDate / XAVC sidecar), not `processed_at`.
     The two are not interchangeable: measured on a real 62-clip library, 55 of the 56
@@ -212,6 +213,11 @@ def shoot_date_facets(
     `unknown` is reported explicitly rather than omitted: 6 of those 62 clips carry no
     readable shoot date, and a facet whose counts don't reconcile with the library
     total is the kind of silent gap that reads as "nothing there".
+
+    Each year also carries its `days` (newest first), filterable via `?shot_date=`.
+    The year alone is too coarse to be the answer for the workflow that asked for
+    this — footage shot across one season lands in a single bucket — and the days
+    come free, since establishing the year already required normalising every row.
     """
     return db.get_shoot_date_facets()
 
@@ -225,6 +231,7 @@ def list_media(
     rating: Optional[str] = None,
     media_type: Optional[str] = None,
     shot_year: Optional[str] = None,
+    shot_date: Optional[str] = None,
     q: Optional[str] = None,
     ids: Optional[str] = None,
     _tok: dict = Depends(require_scopes("videos_read")),
@@ -279,15 +286,23 @@ def list_media(
             if media_type == "audio" and ext not in _AUDIO_EXTS:
                 return False
             # Same class as H8/H14: a filter honoured only on the SQL path silently
-            # stops applying the moment the user types a query. Compare through
-            # db.shot_year so the two stored date shapes are read identically here
-            # and in SQL.
+            # stops applying the moment the user types a query.
+            # Both read `shot_date`, the column the facet groups on and the other two
+            # branches compare against — not a re-parse of the raw text. Re-deriving
+            # it here would make this a second implementation of the same rule, which
+            # is precisely how this filter drifted between branches before.
+            day = rec.get("shot_date")
             if shot_year:
-                y = db.shot_year(rec.get("creation_date"))
                 if shot_year == db.UNKNOWN_SHOT_YEAR:
-                    if y is not None:
+                    if day is not None:
                         return False
-                elif y != str(shot_year):
+                elif (day or "")[:4] != str(shot_year):
+                    return False
+            if shot_date:
+                if shot_date == db.UNKNOWN_SHOT_YEAR:
+                    if day is not None:
+                        return False
+                elif day != str(shot_date):
                     return False
             return True
 
@@ -354,15 +369,15 @@ def list_media(
                 filter_params.extend(sorted(_AUDIO_EXTS))
             # Third place this filter has to exist. The degraded-search path is the
             # one users hit when Ollama is down, and a filter that quietly stops
-            # applying exactly then is worse than one that never worked.
-            if shot_year == db.UNKNOWN_SHOT_YEAR:
-                filter_sql += (
-                    " AND (creation_date IS NULL OR TRIM(creation_date) = ''"
-                    " OR substr(creation_date,1,4) NOT GLOB '[0-9][0-9][0-9][0-9]')"
-                )
-            elif shot_year:
-                filter_sql += " AND substr(creation_date,1,4) = ?"
-                filter_params.append(str(shot_year))
+            # applying exactly then is worse than one that never worked. Built by the
+            # same helper as the list query rather than hand-written twice — the
+            # duplication is what let H8/H14 happen.
+            shot_sql, shot_params = db.shot_window_clause(
+                shot_year=shot_year, shot_date=shot_date
+            )
+            if shot_sql:
+                filter_sql += " AND " + shot_sql
+                filter_params.extend(shot_params)
             with db.get_conn() as conn:
                 rows = conn.execute(
                     f"SELECT {db.LIGHT_COLS} FROM media "
@@ -415,6 +430,8 @@ def list_media(
         filters["media_type"] = media_type
     if shot_year:
         filters["shot_year"] = shot_year
+    if shot_date:
+        filters["shot_date"] = shot_date
 
     records, total = db.get_media_filtered(
         offset=offset, limit=limit, sort=sort, **filters,
