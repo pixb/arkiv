@@ -12,6 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import admin
+import config
+import db
+import media_delete
 from auth import require_scopes
 
 router = APIRouter()
@@ -68,3 +71,96 @@ def admin_revoke_token(
     if not admin.revoke_token(token_id):
         raise HTTPException(404, "Token not found")
     return {"ok": True, "deleted": token_id}
+
+
+# ── Orphan reconcile + recycle bin (Phase 14.5) ───────────────────────────────
+
+class PruneMissingBody(BaseModel):
+    dry_run: bool = True
+
+
+@router.post("/api/admin/prune-missing")
+def admin_prune_missing(
+    body: PruneMissingBody,
+    _tok: dict = Depends(require_scopes("media_delete")),
+):
+    """Remove media rows whose source file no longer exists on disk (the ghost
+    records left by manually-deleted files). With dry_run=true (default) nothing
+    is changed — only a count is returned."""
+    missing = db.iter_missing()
+    if body.dry_run:
+        return {
+            "scanned": len(missing),
+            "pruned": 0,
+            "pruned_ids": [],
+            "dry_run": True,
+        }
+    pruned_ids = []
+    for m in missing:
+        r = media_delete.delete_media_full(
+            m["id"], allow_file_delete=False, token_info=_tok
+        )
+        if r is not None:
+            pruned_ids.append(m["id"])
+    return {
+        "scanned": len(missing),
+        "pruned": len(pruned_ids),
+        "pruned_ids": pruned_ids,
+        "dry_run": False,
+    }
+
+
+@router.get("/api/admin/trash")
+def admin_list_trash(
+    _tok: dict = Depends(require_scopes("admin")),
+):
+    return {"trash": db.list_trash()}
+
+
+class TrashPurgeBody(BaseModel):
+    ttl_days: Optional[int] = None
+
+
+@router.post("/api/admin/trash/purge")
+def admin_purge_trash(
+    body: TrashPurgeBody = None,
+    _tok: dict = Depends(require_scopes("admin")),
+):
+    if body is not None and body.ttl_days is not None:
+        ttl = body.ttl_days
+    else:
+        ttl = config.TRASH_TTL_DAYS
+    purged = db.purge_trash(ttl)
+    return {"ok": True, "purged": purged}
+
+
+@router.post("/api/admin/trash/restore/{trash_id}")
+def admin_restore_trash(
+    trash_id: int,
+    _tok: dict = Depends(require_scopes("admin")),
+):
+    """Move a trashed original back next to its original path (or media-in) and
+    re-ingest it so it returns to the library with thumbnails / transcript /
+    vectors — not just onto disk. Matches the designed "restore triggers an
+    ingest" behaviour (devdoc/media-delete-design.md §2). The re-ingest runs in
+    the background through the shared single-flight slot (audit H3)."""
+    try:
+        dest = db.restore_trash(trash_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    ingest_status = "skipped"
+    try:
+        # Lazy import avoids any router→router load-cycle; routers.ingest is
+        # already loaded by server.py for its router.
+        from routers.ingest import _bg_ingest
+        import threading
+
+        threading.Thread(
+            target=_bg_ingest, args=(dest,), daemon=True
+        ).start()
+        ingest_status = "triggered"
+    except Exception:
+        # restore already succeeded; a failed re-ingest trigger is non-fatal —
+        # the file is back on disk and can be re-ingested manually.
+        ingest_status = "trigger_failed"
+    return {"ok": True, "restored_to": dest, "ingest": ingest_status}

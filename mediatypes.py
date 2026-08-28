@@ -46,8 +46,16 @@ VIDEO_EXT = frozenset({
 # Audio the pipeline transcribes.
 AUDIO_EXT = frozenset({".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg"})
 
-# Everything the ingest pipeline accepts (video + audio partition MEDIA_EXT).
-MEDIA_EXT = VIDEO_EXT | AUDIO_EXT
+# Raster / vector still images treated as first-class media assets (Round 5
+# image-support). ffmpeg thumbs + extracts a single frame from raster formats;
+# vision (Ollama qwen2.5-vl) tags them like video. `.svg` is ingested as an
+# asset but has no decodable pixel stream, so it gets neither thumbnail,
+# frame, nor vision (frontend renders a placeholder).
+IMAGE_EXT = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"})
+
+# Everything the ingest pipeline accepts (video + audio + image partition
+# MEDIA_EXT).
+MEDIA_EXT = VIDEO_EXT | AUDIO_EXT | IMAGE_EXT
 
 
 def sql_in_literal(exts: FrozenSet[str]) -> str:

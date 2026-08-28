@@ -9,6 +9,10 @@ services:
       - ./media.db:/app/media.db
       - ./chroma_db:/app/chroma_db
       - ./thumbnails:/app/thumbnails
+      # Ingest drop folder AND HTTP upload target. The upload endpoint
+      # (POST /api/ingest/upload) writes the file here (rw) and auto-ingests it;
+      # you can also drop files on the host and point the UI at /app/media-in.
+      - ./media-in:/app/media-in:rw
     environment:
       - ARKIV_DB_PATH=/app/media.db
       - ARKIV_CHROMA_PATH=/app/chroma_db
@@ -30,6 +34,10 @@ services:
       # caller full admin with no token. Keep bridge + port mapping.
       - ARKIV_HOST=0.0.0.0
       - ARKIV_PORT=8501
+      # Upload concurrency tuning (defaults baked in; override to taste):
+      # max simultaneous upload handlers, and how long to queue before 429.
+      - ARKIV_UPLOAD_MAX_CONCURRENT=3
+      - ARKIV_UPLOAD_MAX_QUEUE_SEC=300
     depends_on:
       ollama:
         condition: service_healthy   # F6: wait for ollama READY, not just container-start
@@ -62,6 +70,32 @@ services:
     #           capabilities: [gpu]
     # macOS: GPU passthrough not needed (Ollama uses Metal natively on host)
     restart: unless-stopped
+
+  # HTTP/SSE MCP server (LAN build): exposes arkiv's read-only tools to MCP
+  # clients (Claude Desktop/Code) over SSE on 8502. Reuses the already-built
+  # arkiv-arkiv image and the same token library (media.db) — no extra auth.
+  # Point ARKIV_OLLAMA_URL at your Ollama; override per-deploy via env.
+  arkiv-mcp:
+    image: arkiv-arkiv
+    command: python mcp_http_server.py
+    environment:
+      - ARKIV_DB_PATH=/app/media.db
+      - ARKIV_CHROMA_PATH=/app/chroma_db
+      - ARKIV_OLLAMA_URL=${ARKIV_OLLAMA_URL:-http://ollama:11434}
+      - ARKIV_EMBED_MODEL=bge-m3
+      - ARKIV_MCP_BIND=0.0.0.0
+      - ARKIV_MCP_PORT=8502
+    volumes:
+      - ./media.db:/app/media.db
+      - ./chroma_db:/app/chroma_db
+      - ./arkiv_data:/app/.arkiv
+    ports:
+      - "8502:8502"
+    restart: unless-stopped
+    # Inherited HEALTHCHECK probes localhost:8501 (main app); this service only
+    # listens on 8502, so disable it to avoid a permanent unhealthy report.
+    healthcheck:
+      disable: true
 
 volumes:
   ollama_data:

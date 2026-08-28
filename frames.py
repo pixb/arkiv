@@ -167,7 +167,9 @@ def extract_thumbnail(video_path: str, duration_s: float, force: bool = False) -
     if not force and out.exists() and out.stat().st_size > 0:
         return str(out)
 
-    t = max(duration_s * 0.5, 1.0)
+    # A still image has duration 0 → sample the single frame at t=0. Videos get
+    # the mid-point (clamped to >=1s so very short clips don't all hit t=0).
+    t = 0.0 if duration_s <= 0 else max(duration_s * 0.5, 1.0)
     return str(out) if _extract_frame_to(video_path, t, out) else None
 
 

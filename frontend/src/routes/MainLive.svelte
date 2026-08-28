@@ -15,6 +15,8 @@
   import Inspector from '../lib/Inspector.svelte'
   import Mono from '../lib/Mono.svelte'
   import Eyebrow from '../lib/Eyebrow.svelte'
+  import ConfirmDialog from '../lib/ConfirmDialog.svelte'
+  import TrashModal from '../lib/TrashModal.svelte'
   import { resolvedTheme } from '../lib/prefs.js'
   import { pushToast } from '../lib/toast.js'
   import { createViewGen } from '../lib/viewGen.js'
@@ -94,16 +96,23 @@
   // backend rating value (good/ng/review/null) → UI value (good/ng/rev/none).
   const ratingToUi = (r) => (r === 'review' ? 'rev' : r || 'none')
   // API media item → MediaCard's expected shape.
-  const toCard = (it) => ({
-    id: it.id,
-    name: it.filename || `#${it.id}`,
-    kind: it.has_audio && (it.width === 0 || !it.width) ? 'audio' : 'video',
-    rating: ratingToUi(it.rating),
-    dur: fmtDur(it.duration_s),
-    size: fmtSize(it.size_mb),
-    thumb: api.thumbUrlFromPath(it.thumbnail_path),
-    _raw: it,
-  })
+  const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg']);
+  const toCard = (it) => {
+    const ext = (it.ext || '').toLowerCase();
+    const kind = IMG_EXTS.has(ext)
+      ? 'image'
+      : (it.has_audio && (it.width === 0 || !it.width) ? 'audio' : 'video');
+    return {
+      id: it.id,
+      name: it.filename || `#${it.id}`,
+      kind,
+      rating: ratingToUi(it.rating),
+      dur: fmtDur(it.duration_s),
+      size: fmtSize(it.size_mb),
+      thumb: api.thumbUrlFromPath(it.thumbnail_path),
+      _raw: it,
+    };
+  };
 
   let liveTags = null
   let liveCollections = null
@@ -170,6 +179,50 @@
       pushToast(`CSV 匯出失敗: ${e.message}`, 'error')
     }
   }
+  // ---- media delete (reversible: original moved to trash, metadata removed) ----
+  // confirmDel holds the pending delete so the ConfirmDialog can show context and
+  // trigger it; null = no dialog open. Both single (inspector) and bulk (picked)
+  // funnel through here — the backend moves originals to trash, so this is safe.
+  let confirmDel = null
+  let delBusy = false
+  let trashOpen = false
+  function askDeleteSingle() {
+    if (!selected) return
+    confirmDel = { kind: 'single', ids: [selected.id], label: selected.name || `#${selected.id}` }
+  }
+  function askDeleteBulk() {
+    if (!picked.length) return
+    confirmDel = { kind: 'bulk', ids: [...picked], label: `${picked.length} 支素材` }
+  }
+  async function confirmDelete() {
+    if (!confirmDel) return
+    const ids = confirmDel.ids
+    const set = new Set(ids)
+    delBusy = true
+    try {
+      if (confirmDel.kind === 'single') {
+        const r = await api.deleteMedia(ids[0], true)
+        if (r && r.external) pushToast(`外部檔案僅移除資料：${r.message || ''}`)
+        else pushToast(`已移至回收桶 · ${r && r.filename ? r.filename : ids[0]}`)
+      } else {
+        const r = await api.bulkDeleteMedia(ids, true)
+        const n = (r && r.deleted && r.deleted.length) || 0
+        const skipped = (r && r.skipped && r.skipped.length) || 0
+        pushToast(`已刪除 ${n} 支` + (skipped ? ` · 跳過 ${skipped} 支` : ''))
+      }
+      // remove from the grid source so the card/list row disappears immediately
+      items = items.filter((m) => !set.has(m.id))
+      if (confirmDel.kind === 'single' && selectedId === ids[0]) selectedId = null
+      clearPicks()
+      confirmDel = null
+    } catch (e) {
+      pushToast(`刪除失敗: ${e.message}`, 'error')
+      confirmDel = null
+    } finally {
+      delBusy = false
+    }
+  }
+
   // single-clip export from the inspector (auth-safe download).
   async function exportClip(id, fmt, name, trim = null) {
     const stem = (name || `media_${id}`).replace(/\.[^.]+$/, '')
@@ -631,6 +684,7 @@
   $: visible = items.filter((m) => {
     if (activeFilter === 'video' && m.kind !== 'video') return false
     if (activeFilter === 'audio' && m.kind !== 'audio') return false
+    if (activeFilter === 'image' && m.kind !== 'image') return false
     if (activeRating && m.rating !== activeRating) return false
     if (activeCamera && camCategory(m._raw && m._raw.camera_model) !== activeCamera) return false
     return true
@@ -983,6 +1037,7 @@
         >CSV ↓</button>
         <FilterRow bind:activeFilter bind:activeRating />
         <ViewToggle bind:view />
+        <button class="ak-btn trash" on:click={() => (trashOpen = true)} title="回收桶（已刪除、可還原）">回收桶</button>
       </div>
 
       {#if picked.length}
@@ -1007,6 +1062,7 @@
                     title={projectRegName ? '加入跨庫精選集' : '本專案未登記（設定→跨庫專案）'}>加入精選集</button>
             <a class="ak-btn expbtn" href="#/bins" title="檢視精選集">★</a>
             <div class="barvrule"></div>
+            <button class="ak-btn expbtn danger" on:click={askDeleteBulk} title="刪除所選（移至回收桶，可還原）">刪除</button>
             <button class="ak-btn expbtn clear" on:click={clearPicks}>清除</button>
           </div>
         </div>
@@ -1159,6 +1215,7 @@
         onChapters={selected ? (fmt) => exportChapters(selected.id, selected.name, fmt) : null}
         onRemotion={selected ? () => exportRemotion(selected.id, selected.name) : null}
         onReveal={inspPath ? () => revealFile(inspPath, selected && selected.id) : null}
+        onDelete={selected ? askDeleteSingle : null}
         onRate={rate}
         inPoint={detailLive ? detailLive.in_point : null}
         outPoint={detailLive ? detailLive.out_point : null}
@@ -1166,6 +1223,21 @@
       />
     {/if}
   </div>
+
+  <ConfirmDialog
+    open={!!confirmDel}
+    title={confirmDel ? (confirmDel.kind === 'bulk' ? '刪除所選素材' : '刪除素材') : '確認'}
+    message={confirmDel
+      ? `確定要將「${confirmDel.label}」移至回收桶嗎？\n原始檔會保留 30 天，可從回收桶還原。`
+      : ''}
+    confirmLabel="移至回收桶"
+    danger={true}
+    busy={delBusy}
+    on:confirm={confirmDelete}
+    on:cancel={() => (confirmDel = null)}
+  />
+
+  <TrashModal open={trashOpen} on:close={() => (trashOpen = false)} />
 </div>
 
 <style>
@@ -1183,6 +1255,9 @@
   .livesearch { flex: 1 1 200px; min-width: 160px; max-width: 360px; font-size: 12px; }
   .ranked { font-size: 10px; padding: 6px 10px; }
   .metacsv { font-size: 10px; padding: 6px 10px; white-space: nowrap; }
+  .trash { font-size: 10px; padding: 6px 10px; white-space: nowrap; }
+  .expbtn.danger { color: #d9534f; border-color: #d9534f; }
+  .expbtn.danger:hover { background: #d9534f; color: #fff; }
   .gridwrap { flex: 1; overflow: auto; position: relative; }
   /* A1: pre-built sample demo bar — flags the seeded clips as demo + one-click remove */
   .samplebar {

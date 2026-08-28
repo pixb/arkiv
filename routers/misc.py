@@ -324,6 +324,27 @@ def api_health():
     except Exception:
         _mark("ollama", False, "unreachable — is `ollama serve` running?")
 
+    # embeddings coverage: how much of the library has been vector-indexed. A low
+    # number means `python embed.py --rebuild` hasn't been run (or stopped partway),
+    # so semantic search silently returns weaker / fewer hits. Surfaces the gap
+    # that a literal-only query can paper over (Direction 1 of the search-fix).
+    try:
+        import db as dbmod
+
+        with dbmod.get_conn() as conn:
+            total_media = conn.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+            embedded_media = conn.execute(
+                "SELECT COUNT(*) FROM media WHERE embed_hash IS NOT NULL"
+            ).fetchone()[0]
+        coverage = (embedded_media / total_media) if total_media else 1.0
+        out["embeddings"] = {
+            "total_media": total_media,
+            "embedded_media": embedded_media,
+            "coverage": round(coverage, 3),
+        }
+    except Exception as exc:  # noqa: BLE001
+        out["embeddings"] = {"error": type(exc).__name__}
+
     return JSONResponse(out, status_code=200 if out["ready"] else 503)
 
 

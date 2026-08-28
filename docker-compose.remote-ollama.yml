@@ -1,0 +1,41 @@
+# arkiv — Docker Compose (remote Ollama variant, EXAMPLE)
+#
+# Run arkiv on one host, point it at an Ollama on another host.
+# No LAN address is baked in — set ARKIV_OLLAMA_URL for your deployment.
+# Data is bind-mounted so a rebuild never loses media.db / chroma / thumbnails.
+#
+# Start:
+#   ARKIV_OLLAMA_URL=http://your-ollama-host:11434 \
+#     docker compose -f docker-compose.remote-ollama.yml up -d --build
+
+services:
+  arkiv:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./media.db:/app/media.db
+      - ./chroma_db:/app/chroma_db
+      - ./thumbnails:/app/thumbnails
+      - ./clips:/app/clips
+      - ./arkiv_data:/app/.arkiv
+      - ./hf_cache:/root/.cache/huggingface
+      - ./media-in:/app/media-in:rw
+    environment:
+      - ARKIV_DB_PATH=/app/media.db
+      - ARKIV_CHROMA_PATH=/app/chroma_db
+      - ARKIV_THUMBNAILS_DIR=/app/thumbnails
+      # Point this at your Ollama; override per-deploy via env (no address baked in).
+      - ARKIV_OLLAMA_URL=${ARKIV_OLLAMA_URL:-http://ollama:11434}
+      - ARKIV_EMBED_MODEL=bge-m3
+      - ARKIV_VISION_MODEL=qwen2.5vl:7b
+      - ARKIV_WHISPER_MODEL=large-v3-turbo
+      # Force CPU whisper in containers without a GPU.
+      - ARKIV_WHISPER_DEVICE=cpu
+      # Disable Xet CAS downloads (public models otherwise 401 via cas-server).
+      - HF_HUB_DISABLE_XET=1
+      - ARKIV_HOST=0.0.0.0
+      - ARKIV_PORT=8501
+    restart: unless-stopped
