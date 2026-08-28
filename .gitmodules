@@ -1,0 +1,4 @@
+[submodule ".opencode/skills/arkiv-upload-skill"]
+	path = .opencode/skills/arkiv-upload-skill
+	url = git@github.com:pixb/arkvi-upload-skill.git
+	branch = main
