@@ -9,6 +9,10 @@ services:
       - ./media.db:/app/media.db
       - ./chroma_db:/app/chroma_db
       - ./thumbnails:/app/thumbnails
+      # Ingest drop folder AND HTTP upload target. The upload endpoint
+      # (POST /api/ingest/upload) writes the file here (rw) and auto-ingests it;
+      # you can also drop files on the host and point the UI at /app/media-in.
+      - ./media-in:/app/media-in:rw
     environment:
       - ARKIV_DB_PATH=/app/media.db
       - ARKIV_CHROMA_PATH=/app/chroma_db
@@ -30,6 +34,10 @@ services:
       # caller full admin with no token. Keep bridge + port mapping.
       - ARKIV_HOST=0.0.0.0
       - ARKIV_PORT=8501
+      # Upload concurrency tuning (defaults baked in; override to taste):
+      # max simultaneous upload handlers, and how long to queue before 429.
+      - ARKIV_UPLOAD_MAX_CONCURRENT=3
+      - ARKIV_UPLOAD_MAX_QUEUE_SEC=300
     depends_on:
       ollama:
         condition: service_healthy   # F6: wait for ollama READY, not just container-start
