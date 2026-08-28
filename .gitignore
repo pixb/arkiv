@@ -22,6 +22,9 @@ media.db
 arkiv.db
 chroma_db/
 thumbnails/
+arkiv_data/
+hf_cache/
+clips/
 proxies/
 waveforms/
 
@@ -86,3 +89,10 @@ OVERNIGHT_UI_BUILD.md
 .testdata/
 frontend/vite.config.tailnet.js
 frontend/vite.config.dev8502.js
+
+# ingest 来源目录（用户素材，勿提交）
+media-in/
+
+# local-only deploy compose (not for upstream)
+compose.yaml
+docker-compose.local.yml

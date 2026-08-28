@@ -17,3 +17,10 @@ dist
 build
 .streamlit
 pages
+
+# 运行时才需要的 bind-mount 数据，不应打进镜像（否则 hf_cache 1.6GB 会让
+# 构建上下文/导出极慢且镜像臃肿；运行时由 ./hf_cache:/root/.cache/huggingface 提供）
+hf_cache
+media-in
+clips
+arkiv_data
