@@ -812,8 +812,22 @@ def process_file(path: Path, skip_vision: bool, existing: Optional[Dict] = None,
     _stage("probe", "probe")
     meta = probe(str(path))
     if meta is None:
-        print(" [ffprobe failed]")
-        return {}
+        # Images with no decodable stream ffprobe can report (notably SVG) still
+        # want to be media assets. Synthesize a 0-duration stub so the rest of the
+        # pipeline treats them as a still image (no audio, no pixel extraction).
+        if path.suffix.lower() in mediatypes.IMAGE_EXT:
+            meta = {
+                "duration_s": 0.0,
+                "size_mb": round(os.path.getsize(path) / 1048576, 2) if path.exists() else 0.0,
+                "width": None,
+                "height": None,
+                "fps": None,
+                "has_audio": 0,
+                "start_tc": None,
+            }
+        else:
+            print(" [ffprobe failed]")
+            return {}
 
     exif = exiftool_extract(str(path), fps=meta.get("fps") or (existing.get("fps") if existing else None))
     sidecar = parse_xavc_sidecar(str(path))
@@ -867,9 +881,15 @@ def process_file(path: Path, skip_vision: bool, existing: Optional[Dict] = None,
         else:
             record["words_json"] = None
 
-    # Thumbnail (video only, always extracted)
-    is_video = path.suffix.lower() in VIDEO_EXT
-    if is_video and meta["duration_s"] > 0:
+    # Thumbnail + frame extraction + vision for anything with a pixel stream.
+    # Videos use a mid-point; raster images use t=0 (single frame). SVG has no
+    # pixel stream, so it gets none of these (frontend shows a placeholder).
+    ext = path.suffix.lower()
+    is_video = ext in VIDEO_EXT
+    is_image = ext in mediatypes.IMAGE_EXT
+    has_pixels = is_video or (is_image and ext != ".svg")
+
+    if has_pixels:
         _stage("thumb", "thumbnail")
         thumb_path = frm.extract_thumbnail(str(path), meta["duration_s"], force=refresh)
         # Only record a thumbnail when extraction succeeded — omitting the key on
@@ -878,10 +898,11 @@ def process_file(path: Path, skip_vision: bool, existing: Optional[Dict] = None,
         if thumb_path:
             record["thumbnail_path"] = db.to_relative(thumb_path)
 
-    # Frame extraction (video only) — persistent thumbnails + DB records
-    if is_video and meta["duration_s"] > 0:
+    if has_pixels:
         _stage("frames", "frames")
-        frame_data = frm.extract_frames(str(path), meta["duration_s"], meta["fps"] or 30, force=refresh)
+        # Raster images are single stills (duration 0) → exactly one frame at t=0.
+        frame_dur = meta["duration_s"] if is_video else 0.0
+        frame_data = frm.extract_frames(str(path), frame_dur, meta["fps"] or 30, force=refresh)
         for frame in frame_data:
             if frame.get("thumbnail_path"):
                 frame["thumbnail_path"] = db.to_relative(frame["thumbnail_path"])
@@ -2082,7 +2103,12 @@ def main():
     parser.add_argument("--status", action="store_true", help="Phase 11.5e: print resource + queue status (--json for machine-readable)")
     parser.add_argument("--json", action="store_true", help="With --status: emit JSON instead of human-readable")
     parser.add_argument("--retraditionalize", action="store_true", help="Phase 9.8b backfill: retro-convert existing SIMPLIFIED zh transcripts (transcript + segments + words + the per-language archive) to Taiwan Traditional (s2twp), so the pre-9.8b backlog stops missing a 記憶體 query on a 內存 clip. GATED: only genuine Simplified rows convert; already-Traditional / mixed rows are skipped (never fed to the phrase layer, so never corrupted). Idempotent, timing-safe. Follow with `embed.py --rebuild`. No --dir / re-transcribe needed.")
-    parser.add_argument("--dry-run", action="store_true", help="With --retraditionalize: report what would convert without writing.")
+    parser.add_argument("--dry-run", action="store_true", help="With --retraditionalize / --prune-missing: report what would change without writing.")
+    parser.add_argument(
+        "--prune-missing",
+        action="store_true",
+        help="Phase 14.5: 删除源文件已不存在的断链媒体记录（含向量/缩略图/proxy/波形）。配合 --dry-run 只统计不删。",
+    )
     args = parser.parse_args()
 
     # brick 4: apply the per-run whisper preset + language override before any
@@ -2109,7 +2135,7 @@ def main():
         or args.canonicalize_tags
         or args.propose_aliases or args.apply_aliases
         or args.propose_collections or args.apply_collections
-        or args.retraditionalize
+        or args.retraditionalize or args.prune_missing
         or bool(args.queue) or args.status
     )
     if not maintenance_mode and not args.dir and not args.files:
@@ -2127,7 +2153,7 @@ def main():
 
     # Phase 8.0e: pre-flight storage check before any pipeline work.
     # Skip for maintenance modes (they're the tools that fix broken state).
-    if not (args.migrate_relative or args.regenerate_proxies or args.regenerate_thumbnails or args.queue or args.status or args.canonicalize_tags or args.propose_aliases or args.apply_aliases or args.propose_collections or args.apply_collections or args.retraditionalize):
+    if not (args.migrate_relative or args.regenerate_proxies or args.regenerate_thumbnails or args.queue or args.status or args.canonicalize_tags or args.propose_aliases or args.apply_aliases or args.propose_collections or args.apply_collections or args.retraditionalize or args.prune_missing):
         import health
         ok_pf, errors_pf = health.preflight_paths()
         if not ok_pf:
@@ -2138,6 +2164,22 @@ def main():
             sys.exit(4)
 
     db.init_db()
+
+    if args.prune_missing:
+        import media_delete
+        missing = db.iter_missing()
+        if args.dry_run:
+            print("[prune-missing] dry-run: {0} ghost record(s) would be removed.".format(len(missing)))
+            for m in missing:
+                print("  - id={0} {1}".format(m["id"], m["filename"]))
+            return
+        pruned = 0
+        for m in missing:
+            r = media_delete.delete_media_full(m["id"], allow_file_delete=False, token_info=None)
+            if r is not None:
+                pruned += 1
+        print("[prune-missing] removed {0}/{1} ghost record(s).".format(pruned, len(missing)))
+        return
 
     if args.queue:
         _run_queue_cmd(args)
