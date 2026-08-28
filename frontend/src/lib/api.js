@@ -16,7 +16,26 @@ const BASE = import.meta.env?.VITE_API_URL ?? ''
 let _token = null
 export function setToken(t) {
   _token = t || null
+  try {
+    if (_token) localStorage.setItem('arkiv_token', _token)
+    else localStorage.removeItem('arkiv_token')
+  } catch (e) {}
 }
+export function initToken() {
+  try {
+    const fromUrl = new URLSearchParams(location.search).get('token')
+    if (fromUrl) {
+      setToken(fromUrl)
+      const u = new URL(location.href)
+      u.searchParams.delete('token')
+      history.replaceState(null, '', u.pathname + u.search + u.hash)
+      return
+    }
+    const stored = localStorage.getItem('arkiv_token')
+    if (stored) setToken(stored)
+  } catch (e) {}
+}
+initToken()
 
 class ApiError extends Error {
   constructor(status, path, body) {
@@ -225,6 +244,17 @@ export const activateTranscript = (id, lang, opts) =>
 export const ingestWs = (path, limit = 0, options = {}, opts) =>
   req('/api/ingest/ws', { method: 'POST', body: { path, limit, ...options }, ...opts })
 
+// POST /api/ingest/upload (multipart) — upload one or more files into the
+// ingest source dir. Collision-safe on the backend: a same-name file is renamed
+// (<stem>__<YYYYMMDD-HHMMSS><ext>) instead of overwriting an indexed clip.
+// The response carries {saved:[…], renamed:[{from,to}]}; surface `renamed` so
+// the user knows both copies were kept. Requires ingest_write.
+export const uploadFiles = (files, opts) => {
+  const form = new FormData()
+  for (const f of files) form.append('files', f)
+  return req('/api/ingest/upload', { method: 'POST', body: form, ...opts })
+}
+
 // POST /api/embed/rebuild — drop + rebuild the ChromaDB semantic index from all
 // media (runs in the background). Requires ingest_write (token-free on loopback).
 // → {message, queued}
@@ -422,6 +452,48 @@ export const retranscribeStatus = (id, opts) =>
 // already running (single-flight guard); 504 on the 10-min server timeout.
 export const reingest = (id, opts) =>
   req(`/api/media/${id}/reingest`, { method: 'POST', ...opts })
+
+// ---- media delete (reversible trash + orphan cleanup) ----
+// DELETE /api/media/{id}?allow_file_delete=1 → moves the original file into the
+// trash (recoverable) and removes all metadata; files outside PROJECT_ROOT are
+// metadata-only. Requires media_delete scope (token-free on loopback).
+// → {media_id, filename, trashed, moved_to?, external?, message?}
+export const deleteMedia = (id, allowFileDelete = true, opts) =>
+  req(`/api/media/${id}${qs({ allow_file_delete: allowFileDelete ? 1 : 0 })}`, {
+    method: 'DELETE',
+    ...opts,
+  })
+// POST /api/media/bulk-delete {ids, allow_file_delete} →
+//   {deleted:[id…], skipped:[id…], errors:[{id, error}]}
+export const bulkDeleteMedia = (ids, allowFileDelete = true, opts) =>
+  req('/api/media/bulk-delete', {
+    method: 'POST',
+    body: { ids, allow_file_delete: allowFileDelete },
+    ...opts,
+  })
+// GET /api/admin/trash → {trash:[{id, media_id, filename, original_path,
+//   trash_path, deleted_at, expires_at}]}. Requires admin scope.
+export const getTrash = (opts) => req('/api/admin/trash', opts)
+// POST /api/admin/trash/purge {ttl_days?} → {ok, purged}. ttl_days=0 purges all.
+export const purgeTrash = (ttlDays = null, opts) =>
+  req('/api/admin/trash/purge', {
+    method: 'POST',
+    body: ttlDays == null ? {} : { ttl_days: ttlDays },
+    ...opts,
+  })
+// POST /api/admin/trash/restore/{trash_id} → {ok, restored_to}. Requires admin.
+export const restoreTrash = (trashId, opts) =>
+  req(`/api/admin/trash/restore/${encodeURIComponent(trashId)}`, {
+    method: 'POST',
+    ...opts,
+  })
+// POST /api/admin/prune-missing {dry_run} → {scanned, pruned, pruned_ids, dry_run}.
+// Clears ghost rows whose source file was manually deleted. Requires media_delete.
+export const pruneMissing = (dryRun = true, opts) =>
+  req(`/api/admin/prune-missing${qs({ dry_run: dryRun ? 1 : 0 })}`, {
+    method: 'POST',
+    ...opts,
+  })
 
 // ---- editing proxies ----
 // GET /api/proxy/status → {total, proxied, size_mb}
