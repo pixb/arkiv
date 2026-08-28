@@ -9,6 +9,16 @@ services:
       - ./media.db:/app/media.db
       - ./chroma_db:/app/chroma_db
       - ./thumbnails:/app/thumbnails
+      # Project registry (projects.py) persistence. Settings ⇒ Projects ⇒ Add Project
+      # stores the list in ~/.arkiv-projects.json, which inside the container is
+      # /root/.arkiv-projects.json — living in the container's ephemeral layer. Without
+      # this bind mount, `docker compose down` / image rebuild / `--force-recreate`
+      # silently wipes every registered project. Mount the *directory*, not the file:
+      # bind-mounting a single file that doesn't exist on the host makes Docker
+      # create a directory at the source path, which pollutes ./arkiv_data.
+      # ARKIV_PROJECTS_REGISTRY pins the file inside the mount; projects.py already
+      # honours it.
+      - ./arkiv_data/projects:/root/.arkiv-projects
     environment:
       - ARKIV_DB_PATH=/app/media.db
       - ARKIV_CHROMA_PATH=/app/chroma_db
@@ -30,6 +40,8 @@ services:
       # caller full admin with no token. Keep bridge + port mapping.
       - ARKIV_HOST=0.0.0.0
       - ARKIV_PORT=8501
+      # See the ./arkiv_data/projects volume mount above; keep the path in sync.
+      - ARKIV_PROJECTS_REGISTRY=/root/.arkiv-projects/projects.json
     depends_on:
       ollama:
         condition: service_healthy   # F6: wait for ollama READY, not just container-start
