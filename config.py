@@ -93,6 +93,20 @@ THUMBNAILS_DIR = _validate_writable_path(
 PROXIES_DIR = _validate_writable_path(
     Path(os.getenv("ARKIV_PROXIES_DIR", str(_ARKIV_DIR / "proxies"))), "ARKIV_PROXIES_DIR"
 )
+# Phase 14.5: trash (recycle bin) for deleted media originals — a destructive
+# delete moves the source file here instead of unlinking, so a mistaken removal
+# is recoverable for ARKIV_TRASH_TTL_DAYS days.
+TRASH_DIR = _ARKIV_DIR / "trash"
+# Extra filesystem roots the delete endpoint is permitted to physically remove
+# files from (comma-separated). Empty by default → only PROJECT_ROOT is allowed,
+# so offload cold-storage / external-absolute / federated paths are metadata-only.
+MEDIA_ROOTS = [
+    p.strip() for p in os.getenv("ARKIV_MEDIA_ROOTS", "").split(",") if p.strip()
+]
+TRASH_TTL_DAYS = int(os.getenv("ARKIV_TRASH_TTL_DAYS", "30"))
+# Waveform cache lives under BASE_DIR/waveforms (see routers/media.py waveform);
+# kept here so delete + prune can clean it by media id.
+WAVEFORMS_DIR = BASE_DIR / "waveforms"
 # Reviewed library tag alias map (tag_aliases.py) + its proposal staging file.
 # Plain JSON in the project data dir — reviewable, version-controllable, per-project.
 TAG_ALIASES_PATH = _ARKIV_DIR / "tag_aliases.json"
