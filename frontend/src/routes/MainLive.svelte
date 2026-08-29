@@ -833,7 +833,38 @@
   $: inspThumb = selected ? selected.thumb : null
   // Real playback stream for the inspector player (loopback = token-free; remote
   // carries ?token). Inspector turns this into a <video>/<audio> element.
-  $: inspVideoSrc = selected ? api.streamUrl(selected.id) : null
+  $: inspVideoSrc = selected ? api.streamUrl(selected.id) + (proxyNonce ? `&_pn=${proxyNonce}` : '') : null
+  // Browser-incompatible clip → build an H.264 proxy, then reload the stream so
+  // the Inspector player picks up the now-playable proxy. proxyNonce busts the
+  // cached <video>/<audio> src after the proxy is ready.
+  let proxyNonce = 0
+  let proxyBusy = false
+  let proxyErr = null
+  async function requestProxy(id) {
+    if (!id || proxyBusy) return
+    proxyBusy = true
+    proxyErr = null
+    try {
+      await api.buildProxy(id)
+      const url = api.streamUrl(id)
+      let ready = false
+      for (let i = 0; i < 80; i++) {
+        // Poll the stream: 200 video/mp4 ⇒ proxy ready; 409 ⇒ still building.
+        try {
+          const r = await fetch(url, { method: 'HEAD' })
+          const ct = r.headers.get('content-type') || ''
+          if (r.ok && ct.includes('video/mp4')) { ready = true; break }
+        } catch (_) { /* transient; keep polling */ }
+        await new Promise((res) => setTimeout(res, 1500))
+      }
+      if (ready) proxyNonce = Date.now()
+      else proxyErr = '代理生成逾時，請稍後重試'
+    } catch (e) {
+      proxyErr = e && e.message ? e.message : '代理生成失敗'
+    } finally {
+      proxyBusy = false
+    }
+  }
   $: inspPath = detailLive ? detailLive.path : null
   // tags: detail carries the quality-filtered tag list [{id,name,source}].
   $: inspTags = detailLive ? (detailLive.tags || []) : null
@@ -1192,6 +1223,9 @@
         live={true}
         thumbUrl={inspThumb}
         videoSrc={inspVideoSrc}
+        onRequestProxy={selected ? requestProxy : null}
+        {proxyBusy}
+        proxyErr={proxyErr}
         fps={inspectorMedia ? inspectorMedia.fpsExact : null}
         peaks={inspPeaks}
         pathLabel={inspPath}

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Inspector 現在能播出瀏覽器不相容編碼的素材。** 過去 `<video>`/`<audio>` 直接把
+  `/api/stream/{id}` 設給 `src`，對 ProRes/HEVC 收到的 `409 {"need_proxy":true}` 完全沒處理，
+  對 mjpeg/qtrle 則靜默收到解不開的原始檔，都只顯示空白/播不出。現在：stream 路由對任何不在
+  瀏覽器可播清單的視頻編碼（mjpeg/qtrle/prores/hevc…）統一回 `409 need_proxy`；Inspector 偵測
+  媒體錯誤後顯示「生成代理並播放」，點擊即 `POST /api/proxy/build/{id}`、輪詢至代理就緒後自動重載。
+  （codec.py / routers/misc.py:63 / frontend/src/lib/Inspector.svelte / MainLive.svelte / api.js）
+
 ## v1.1.2 - 2026-08-24
 
 **Nothing in this release changes what arkiv does.** It exists so that three changes to the

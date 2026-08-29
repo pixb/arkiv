@@ -329,6 +329,12 @@ export const appendToken = (url) =>
 // /api/stream now requires videos_read. A <video src> can't send an Authorization
 // header, so when a token is set (direct remote deployment) carry it as ?token=.
 export const streamUrl = (id) => appendToken(`${BASE}/api/stream/${id}`)
+// Proxy build + status (browser-incompatible codecs). POST /api/proxy/build/{id}
+// queues a background H.264 transcode; the Inspector polls until the proxy is
+// ready, then reloads the stream. Requires ingest_write (token-free on loopback).
+export const buildProxy = (id, opts) =>
+  req(`/api/proxy/build/${id}`, { method: 'POST', ...opts })
+export const proxyStatus = (opts) => req('/api/proxy/status', opts)
 // EDL/FCPXML/SRT/VTT/CSV export download URL for a clip (optional in/out trim).
 export const exportUrl = (id, fmt) => `${BASE}/api/media/${id}/export/${fmt}`
 // Batch timeline export: lay several clips end-to-end on one timeline.

@@ -27,6 +27,20 @@
   $: useImage = !!videoSrc && !!media && media.kind === 'image'
   $: useVideo = !!videoSrc && !is360 && !!media && media.kind !== 'audio' && media.kind !== 'image'
   $: useAudio = !!videoSrc && !!media && media.kind === 'audio'
+  // Parent hook: build an H.264 proxy so a browser-incompatible clip becomes
+  // playable. `proxyBusy`/`proxyErr` mirror the in-flight build state back.
+  export let onRequestProxy = null
+  export let proxyBusy = false
+  export let proxyErr = null
+  // Playback failure: the <video>/<audio> element errored (incompatible codec,
+  // or a 409 need_proxy JSON body it received instead of media). Surfaced as a
+  // proxy-build affordance so the clip can be played.
+  let mediaError = null
+  function onMediaError() {
+    mediaError = '此素材編碼瀏覽器無法直接播放，需先生成代理'
+  }
+  // A new src (e.g. once a proxy is built) clears the error and reloads cleanly.
+  $: if (videoSrc) mediaError = null
   // Frame features only make sense for a video with a known, sane fps.
   $: frameExact = useVideo && typeof fps === 'number' && fps > 0
 
@@ -365,12 +379,12 @@
       <img class="previmg" src={videoSrc} alt={media.name} on:error={() => (imgFailed = true)} />
     {:else if useVideo}
       <!-- svelte-ignore a11y-media-has-caption -->
-      <video bind:this={playerEl} on:timeupdate={onTimeUpdate} on:loadedmetadata={onLoadedMeta} class="previmg" controls playsinline preload="metadata" poster={thumbUrl || undefined} src={videoSrc}></video>
+      <video bind:this={playerEl} on:timeupdate={onTimeUpdate} on:loadedmetadata={onLoadedMeta} on:error={onMediaError} class="previmg" controls playsinline preload="metadata" poster={thumbUrl || undefined} src={videoSrc}></video>
     {:else if useAudio}
       {#if thumbUrl && !imgFailed}
         <img class="previmg" src={thumbUrl} alt={media.name} on:error={() => (imgFailed = true)} />
       {/if}
-      <audio bind:this={playerEl} on:timeupdate={onTimeUpdate} on:loadedmetadata={onLoadedMeta} class="prevaudio" controls preload="metadata" src={videoSrc}></audio>
+      <audio bind:this={playerEl} on:timeupdate={onTimeUpdate} on:loadedmetadata={onLoadedMeta} on:error={onMediaError} class="prevaudio" controls preload="metadata" src={videoSrc}></audio>
     {:else if thumbUrl && !imgFailed}
       <img class="previmg" src={thumbUrl} alt={media.name} on:error={() => (imgFailed = true)} />
     {:else}
@@ -387,6 +401,19 @@
           <div class="trackhead"></div>
         </div>
         <Mono style="font-size:11px;color:#f3f2ee;">{media.dur}</Mono>
+      </div>
+    {/if}
+    {#if mediaError && (useVideo || useAudio)}
+      <!-- Browser couldn't decode the stream (incompatible codec / 409 need_proxy).
+           Offer a one-click proxy build; MainLive drives the build + reload. -->
+      <div class="playerr">
+        <div class="playerr-msg">{mediaError}</div>
+        <button
+          class="exp"
+          on:click={() => onRequestProxy && onRequestProxy(media.id)}
+          disabled={proxyBusy || !onRequestProxy}
+        >{proxyBusy ? '生成代理中…' : '生成代理並播放'}</button>
+        {#if proxyErr}<div class="playerr-err">{proxyErr}</div>{/if}
       </div>
     {/if}
   </div>
@@ -674,6 +701,14 @@
     background-image: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent); pointer-events: none;
   }
   .controls { position: absolute; left: 12px; bottom: 12px; right: 12px; display: flex; align-items: center; gap: 10px; }
+  /* Playback-failure overlay: browser-incompatible codec → offer proxy build. */
+  .playerr {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; padding: 18px;
+    background: rgba(0, 0, 0, 0.62); text-align: center;
+  }
+  .playerr-msg { color: #f3f2ee; font-size: 12px; line-height: 1.5; max-width: 80%; }
+  .playerr-err { color: #ff9b9b; font-size: 11px; }
   .track { flex: 1; height: 2px; background: rgba(243, 242, 238, 0.25); position: relative; }
   .trackfill { position: absolute; left: 0; top: 0; bottom: 0; width: 25%; background: #f3f2ee; }
   .trackhead { position: absolute; left: 25%; top: -3px; width: 1px; height: 8px; background: #f3f2ee; }
