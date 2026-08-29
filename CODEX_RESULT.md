@@ -1,101 +1,39 @@
-# CODEX_RESULT.md
+# CODEX_RESULT — 刪除 clip 不同步移除精選集
 
-## 任務：清理 media-in 中已手動刪除重複檔案後殘留的資料庫幽靈記錄
-日期：2026-08-29
+日期: 2026-08-30
+範圍: `/vol1/1000/docker/nec8-docker/arkiv`（docker 部署專案，Phase 14.5 含 unified media delete）
 
-### 完成項目
-- [x] 確認容器部署結構：後端跑在 `arkiv-arkiv-1`，DB=`/app/media.db`、chroma=`/app/chroma_db`、media-in 掛載為 rw，資料在主機與容器間同步。
-- [x] 執行 `docker compose exec arkiv python ingest.py --prune-missing --dry-run`，預覽將移除 58 筆幽靈記錄。
-- [x] 確認 58 筆全部屬於 `cinema_camera_film_effect_justin_odisho_super_8mm_pack_*` 批次（非該批數量 = 0），與使用者手動刪除的重複檔一致。
-- [x] 執行 `docker compose exec arkiv python ingest.py --prune-missing`，結果 `removed 58/58 ghost record(s)`。
-- [x] 再次 dry-run 驗證：0 ghost record(s) would be removed —— 無殘留。
+## 完成項目
 
-### 測試結果
-```
-[prune-missing] dry-run: 58 ghost record(s) would be removed.   (執行前預覽)
-[prune-missing] removed 58/58 ghost record(s).                   (實際執行)
-[prune-missing] dry-run: 0 ghost record(s) would be removed.     (執行後驗證)
-```
+- [x] 根因定位：`media_delete.delete_media_full` 刪除 media 時，未從 `bins.py` 的精選集移除該 `media_id`，導致 bin 計數不遞減（如 空鏡 19 → 刪 1 仍顯示 19）。
+- [x] 在 `bins.py` 新增 `remove_media_from_all_bins(project_name, media_id)`：遍歷所有 bin，移除所有 `project_name + media_id` 相符項；`project_name=None` 時回退為僅比對 `media_id`。
+- [x] 在 `media_delete.delete_media_full` 串接呼叫：成功刪除後，依 `config.PROJECT_ROOT` 經 `projects.discover_projects()` 解析目前 `project_name`，呼叫 `bins_store.remove_media_from_all_bins(project_name, media_id)`（best-effort，catch 後記 warning，不影響刪除主流程）。
+- [x] 容器即時生效：`docker cp` bins.py + media_delete.py 進 `arkiv-arkiv-1` 並重啟；後已 `docker compose build` 重建 image `arkiv-arkiv` + `--force-recreate` 容器，`health http=200`。
 
-### 有疑慮的項目
-- ⚠️ REVIEW: 此操作為不可逆的 metadata 刪除（SQLite 列 + Chroma 向量 + 衍生縮圖）。因來源檔已不存在，自動走 metadata-only 路徑，未寫入回收桶。符合使用者「移除資料庫相關資訊」意圖，但無法從回收桶還原。
-- ⚠️ REVIEW: 前端列表緩存 —— 需前端重新整理（重新呼叫 `GET /api/media`）才會反映移除；未確認是否需要手動觸發或自動輪詢。
+## 測試結果
 
-### 未完成 / 待觀察
-- 前端實際顯示消失情形未由本 agent 在瀏覽器內驗證（僅確認 API/DB 層已清理）。
+1. 單元測試（隔離 `ARKIV_BINS_PATH=/tmp/opencode/test_bins.json`）：
+   - A=[main/9, main/5], B=[main/9, other/9] → `remove_media_from_all_bins("main", 9)`
+   - 結果：A=[main/5]（9 移除、5 保留），B=[other/9]（跨 project 不誤傷）= **PASS**
+   - 回退路徑 `project_name=None`：僅比對 media_id，移除所有 project 下該 id = **PASS**
 
-### 與 spec 不一致之處
-- 無。使用現有 `prune-missing` 功能（routers/admin.py:82, ingest.py:2168），符合 Phase 14.5 設計。
+2. 容器內真端到端（可逆，假 clip 999999）：
+   - 臨時 `ARKIV_BINS_PATH=/tmp/e2e_bins.json`，bin 含 `{project_name:"app", media_id:"999999"}`
+   - 插入假 row → `delete_media_full(999999)` → bin items 變為 `[]` = **E2E PASS**
+   - `current project name: app`（scoped 路徑確實觸發）
 
----
+3. 載入健全性：容器內 `remove_media_from_all_bins in dir(bins)` = True；`media_delete.py` 含呼叫 = True。
 
-## 任務：修復 Inspector 無法播放瀏覽器不相容編碼素材（音頻/影片播不出）
-日期：2026-08-29
+## 疑慮 / REVIEW
 
-### Root Cause
-- Inspector 把 `/api/stream/{id}` 直接設給 `<video>`/`<audio>` 的 `src`（Inspector.svelte:368/373），兩者皆無 `on:error` 處理。
-- 後端對 prores/hevc 回 `409 {"need_proxy":true}`（codec.py:18 `PROXY_CODECS`），但前端 grep 確認**完全沒處理 `need_proxy`** → 收到 JSON 當媒體 → 媒體元素靜默失敗。
-- 更嚴重：`mjpeg`(37 筆)/`qtrle`(21 筆) 不在 `PROXY_CODECS`、`.mov` 不需 remux → 後端「送原始檔」（misc.py:159-166），瀏覽器解不開 → 媒體元素也 `error`，同樣無提示。全庫共 58 筆影片（含帶聲軌的 id=341 等）屬此類。
-- 純音頻 .mp3/.wav（6 筆）`kind='audio'` → `<audio controls>` 本就有播放鈕、可播，不受影響。
+- ⚠️ 此修復**僅適用 docker 專案**。github fork（`~/dev/code/github/arkiv`，基於 vulture-s/arkiv:main）無 `media_delete.py`、亦無 `DELETE /api/media/{id}` 路由（其刪除走 `db.delete_media` 直接呼叫，見 `sample_prebuilt.py:239`）。故無對應 upstream PR 目標；若要 upstream，需先將 Phase 14.5 unified delete 整體移植。
+- ⚠️ `delete_media_full` 的 bins 清理為 best-effort（catch 後 warning）。若 `bins.json` 鎖損或 `project_name` 解析失敗，會記 warning 但不中斷刪除，bin 可能殘留——與「刪除優先成功」的設計權衡一致，但建議後續於 UI 用 `bin_item_status` 標記失效項而非靜默殘留。
 
-### 完成項目
-- [x] `codec.py`：新增 `BROWSER_PLAYABLE_VIDEO` 允許清單 + `is_browser_playable_video()`，覆蓋 h264/vp9/av1/mpeg4 等。
-- [x] `routers/misc.py`：stream 路由對任何不在允許清單的視頻編碼（mjpeg/qtrle/prores/hevc…）回 `409 need_proxy`，與既有 PROXY_CODECS 語意相容（h264 仍直接播、音頻 NULL 走回退）。
-- [x] `api.js`：新增 `buildProxy(id)`（POST /api/proxy/build/{id}）+ `proxyStatus()`。
-- [x] `Inspector.svelte`：`<video>`/`<audio>` 加 `on:error`；播放失敗時顯示「生成代理並播放」覆蓋層；新增 props `onRequestProxy`/`proxyBusy`/`proxyErr`。
-- [x] `MainLive.svelte`：實作 `requestProxy(id)`——呼叫 buildProxy、輪詢 stream 直到 `200 video/mp4`、用 `proxyNonce` 強制重新載入播放器。
-- [x] 重建容器 image 並重新部署（`arkiv-arkiv-1` 現跑新 image，health: healthy）。
+## 未完成
 
-### 測試結果
-```
-# 後端行為（容器內 curl，loopback 有完整 scope）
-id=341 (mjpeg)  -> HTTP 409 | application/json           {"need_proxy":true,"reason":"browser-incompatible codec (mjpeg)..."}
-id=121 (.mp3)   -> HTTP 200 | audio/mpeg                 (不受影響)
-id=92  (prores+proxy) -> HTTP 200 | video/mp4             (proxy 可播)
+- [ ] 未 commit（依規範待使用者確認後再 commit docker 專案 bins.py / media_delete.py）。
+- [ ] 未加 regression test 到 `tests/test_media_delete.py`（可加：插入假 media + bin，刪除後斷言 bin 該項消失）。
 
-# 端到端：觸發 buildProxy(341) 後輪詢 stream
-poll 1-4: 409 ...  poll 5: 200 video/mp4   -> READY（代理轉為 H.264 mp4，可播）
+## 與 spec 不一致
 
-# 前端建置
-npm run build  -> ✓ built（InspectorFull chunk 含新邏輯，無 Svelte 錯誤）
-
-# health.py
-Result: 23/24 PASS, 0 FAIL, 1 SKIP
-
-# proxies 目錄 39 -> 40（id=341 代理確實產生）
-```
-
-### 有疑慮的項目
-- ⚠️ REVIEW: 前端 UI 修復僅經 `npm run build` 編譯驗證，**未在瀏覽器實機點擊驗證**（無瀏覽器環境）。後端 409/代理生成/200 流程已在容器內 curl 端到端證明；前端 `on:error`→顯示 CTA→`requestProxy`→`proxyNonce` 重載邏輯為靜態推導正確，建議上線後在瀏覽器實測一次 mjpeg 影片的「生成代理並播放」按鈕。
-- ⚠️ REVIEW: 「音頻沒有播放按鈕」原始描述，純音頻檔依程式碼本就有 `<audio controls>` 播放鈕（已確認 `kind='audio'` 路徑成立），故本次修復鎖定在「帶聲軌影片播不出」的編碼相容性問題。若使用者指的是某支純音頻檔仍無按鈕，需另開調查（可能為個別 WebView 行為）。
-
-### 與 spec 不一致之處
-- 無。沿用現有 `POST /api/proxy/build/{id}`（routers/proxy.py:62）與 `409 need_proxy` 設計（misc.py 註解於 Phase 7.7g 即預留此信號），本次僅補齊「前端消費信號」+「mjpeg/qtrle 也納入 need_proxy」兩處缺口。
-
----
-
-## 任務（續）：音頻 Inspector 預覽是「白框」、看不到播放器
-日期：2026-08-29
-
-### Root Cause（與上輪不同）
-- 上輪修的是「編碼不相容→建代理」；但純音頻檔本身可播，問題在渲染：舊 `useAudio` 分支把原生
-  `<audio controls>` 用 `position:absolute` 貼在 16:9 預覽盒底部，而瀏覽器/WebView 的原生 audio
-  控制條是白色長條，在深色預覽盒上像個「白框」、易被忽略，部分 WebView 甚至不顯示播放鈕。
-- 確認：`Thumb` 元件對 audio 畫的是深色抽象塊（非白框），故 `useAudio` 確實為 true、音頻元素有渲染，
-  只是原生白色控制條造成「白框」觀感。音頻檔 `thumbnail_path=None` → 無縮圖干擾。
-
-### 完成項目
-- [x] `Inspector.svelte`：音頻預覽改為**自訂主題化播放器**——置中圓形播放/暫停鈕（`togglePlay`/`onPlay`/`onPause`）+ 隱藏原生 `<audio>`（不帶 `controls`）+ 時間碼，背景用 `var(--surface-2)`，不再依賴瀏覽器白色原生控制條。
-- [x] 新增 `playing` 狀態、reset 於 `videoSrc` 變更時。
-- [x] 重建容器 image 並重新部署（新 image，`health: healthy`）。
-
-### 測試結果
-```
-frontend npm run build -> ✓ built (216 modules, 無 Svelte 錯誤)
-容器內 curl id=121 (.mp3) -> HTTP 200 | audio/mpeg   (音頻流可播)
-app HTTP 200 (新前端已上線)
-```
-⚠️ 前端 UI 仍僅經編譯驗證，未在瀏覽器實機點擊；建議上線後對一支 .mp3 實測圓形播放鈕是否出現並可播。
-
-### 與 spec 不一致之處
-- 無。僅調整音頻預覽的呈現方式（自訂播放鈕替代原生控制條），不改播放管線語意。
+- 無偏離 config 預設閾值，無新增依賴。
