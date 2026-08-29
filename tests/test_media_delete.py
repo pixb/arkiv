@@ -125,3 +125,36 @@ def test_trash_list_and_purge(tmp_path, tmp_db, monkeypatch):
     purged = db_mod.purge_trash(ttl_days=0)
     assert purged == 1
     assert db_mod.list_trash() == []
+
+
+def test_delete_removes_clip_from_bins(tmp_path, tmp_db, monkeypatch):
+    import bins as bins_mod
+
+    monkeypatch.setenv("ARKIV_BINS_PATH", str(tmp_path / "bins.json"))
+    _set_env(tmp_path, monkeypatch)
+
+    src = tmp_path / "media-in" / "clip.mp4"
+    src.write_bytes(b"dummy")
+    mid = _insert_media("media-in/clip.mp4", "clip.mp4")
+
+    # bin A references the deleted clip; bin B references an unrelated clip that
+    # must survive the delete.
+    bins_mod.save_bins({
+        "version": 1,
+        "bins": [
+            {"id": "b1", "name": "空鏡", "items": [
+                {"project_name": "app", "media_id": mid, "filename": "clip.mp4"}]},
+            {"id": "b2", "name": "keep", "items": [
+                {"project_name": "app", "media_id": 123456, "filename": "other.mp4"}]},
+        ],
+    })
+
+    media_delete.delete_media_full(mid, allow_file_delete=True, token_info=None)
+
+    after = bins_mod.load_bins()
+    b1_items = [i for i in after["bins"] if i["id"] == "b1"][0]["items"]
+    b2_items = [i for i in after["bins"] if i["id"] == "b2"][0]["items"]
+    assert all(str(it.get("media_id")) != str(mid) for it in b1_items), \
+        "deleted clip should be removed from its bin"
+    assert any(str(it.get("media_id")) == "123456" for it in b2_items), \
+        "unrelated clip must remain in its bin"

@@ -339,6 +339,33 @@ def remove_item(bin_id: str, project_name: str, media_id: Any) -> Bin:
         return target
 
 
+def remove_media_from_all_bins(project_name: str, media_id: Any) -> int:
+    """Drop a (project_name, media_id) reference from every bin. Called when a clip
+    is deleted from its library so curated bins stop counting ghost entries (the
+    row is gone but the bin still pointed at it). Returns the number of bins changed.
+
+    When project_name is None (current library not in the projects registry) we
+    cannot scope by project, so we fall back to matching by media_id alone — correct
+    for a single-library deployment, and safe because the deleted id is gone anyway.
+    """
+    drop = _item_key(project_name, media_id) if project_name else None
+    changed = 0
+    with _BINS_LOCK:
+        bins = _load_bin_objects()
+        for b in bins:
+            if drop is not None:
+                kept = [item for item in b.items if item.key() != drop]
+            else:
+                kept = [item for item in b.items if str(item.media_id) != str(media_id)]
+            if len(kept) != len(b.items):
+                b.items = kept
+                b.updated_at = _now_iso()
+                changed += 1
+        if changed:
+            _persist(bins)
+    return changed
+
+
 def bin_item_status(project_name: str, media_id: Any) -> str:
     """Reference-integrity gate for one bin item. Composes the primitives that
     already exist but that nothing wires together for a cross-project item:
