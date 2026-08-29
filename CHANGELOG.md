@@ -8,8 +8,9 @@
   - 過去 `<video>`/`<audio>` 直接把 `/api/stream/{id}` 設給 `src`：對 ProRes/HEVC 收到的
     `409 {"need_proxy":true}` 完全沒處理，對 mjpeg/qtrle 則靜默收到解不開的原始檔，都只顯示
     空白/播不出（含帶聲軌影片「音頻沒播放按鈕」的現象）。
-  - stream 路由現在對任何不在瀏覽器可播清單的視頻編碼（mjpeg/qtrle/prores/hevc…）統一回
-    `409 need_proxy`；h264/vp9/av1 仍直接播，純音頻（NULL）走原回退路徑不誤觸。
+  - stream 路由現在對**影片**任何不在瀏覽器可播清單的視頻編碼（mjpeg/qtrle/prores/hevc…）統一回
+    `409 need_proxy`；**圖片/音頻不受影響**（圖片由副檔名 `mediatypes.IMAGE_EXT` 推導，其
+    mjpeg/png/jpeg 編碼不會誤觸 409）。h264/vp9/av1 影片仍直接播，純音頻（NULL）走原回退路徑不誤觸。
   - Inspector 偵測媒體錯誤後顯示「生成代理並播放」，點擊即 `POST /api/proxy/build/{id}`、
     輪詢至代理就緒後自動重載播放器。
   - 純音頻檔本身可播，但舊實作把原生 `<audio controls>` 貼在預覽盒底部，瀏覽器/WebView 的

@@ -144,7 +144,14 @@ def stream_media(media_id: int, _tok: dict = Depends(require_scopes("videos_read
                         conn.execute("UPDATE media SET codec=? WHERE id=?", (stored_codec, media_id))
                 except Exception:
                     pass  # backfill is best-effort; playback must not fail on it
-    if stored_codec and (
+    # Only video needs a browser-playable *video* codec. Images and audio are served
+    # as-is: an image's stored codec is mjpeg/png/jpeg, which is NOT a browser-playable
+    # video codec, so forcing a 409 here would break image preview in the Inspector
+    # (the <img> points at this same /api/stream endpoint and would load a 409 body).
+    # `kind` is not a DB column; the frontend derives it from the file extension, so
+    # we use the same signal here (image extensions never need a playback proxy).
+    is_image = file_path.suffix.lower() in mediatypes.IMAGE_EXT
+    if not is_image and stored_codec and (
         stored_codec in codec.PROXY_CODECS or not codec.is_browser_playable_video(stored_codec)
     ):
         return JSONResponse(
