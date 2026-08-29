@@ -20,6 +20,23 @@ PROXY_CODECS = frozenset({
     "prores", "ap4h", "ap4x", "apch", "apcn", "apcs", "apco",
 })
 
+# Video codecs a browser <video>/<audio> element can actually decode + demux
+# (Chrome / Safari / WKWebView). Anything NOT in this set needs an H.264 proxy
+# before it can play in the Inspector — this is a SUPERSET of PROXY_CODECS so the
+# stream endpoint can return one consistent `409 need_proxy` signal for every
+# browser-incompatible codec (e.g. mjpeg / qtrle), not just HEVC/ProRes.
+BROWSER_PLAYABLE_VIDEO = frozenset({
+    "h264", "avc1", "avc3",
+    "mpeg4", "m4v",
+    "vp8", "vp9", "av1",
+    "theora",
+})
+
+
+def is_browser_playable_video(codec_name: Optional[str]) -> bool:
+    """True if a browser can decode this video codec directly (proxy not needed)."""
+    return (codec_name or "").strip().lower() in BROWSER_PLAYABLE_VIDEO
+
 # Containers a browser cannot demux, whatever is inside them. AVCHD camcorder
 # footage (.mts/.m2ts) is almost always plain H.264 — so the codec check says
 # "playable", we hand over the original bytes labelled video/mp4, and the

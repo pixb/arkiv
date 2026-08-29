@@ -144,15 +144,19 @@ def stream_media(media_id: int, _tok: dict = Depends(require_scopes("videos_read
                         conn.execute("UPDATE media SET codec=? WHERE id=?", (stored_codec, media_id))
                 except Exception:
                     pass  # backfill is best-effort; playback must not fail on it
-    if stored_codec and stored_codec in codec.PROXY_CODECS:
+    if stored_codec and (
+        stored_codec in codec.PROXY_CODECS or not codec.is_browser_playable_video(stored_codec)
+    ):
         return JSONResponse(
             status_code=409,
             content={
                 "need_proxy": True,
                 "media_id": media_id,
                 "filename": rec.get("filename"),
-                "reason": "browser-incompatible codec (HEVC/ProRes); proxy required for playback",
-                "hint": "POST /api/proxy/build to queue proxy generation",
+                "reason": "browser-incompatible codec ({0}); proxy required for playback".format(
+                    stored_codec
+                ),
+                "hint": "POST /api/proxy/build/{0} to queue proxy generation".format(media_id),
             },
         )
 
