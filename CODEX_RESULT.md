@@ -71,3 +71,31 @@ Result: 23/24 PASS, 0 FAIL, 1 SKIP
 
 ### 與 spec 不一致之處
 - 無。沿用現有 `POST /api/proxy/build/{id}`（routers/proxy.py:62）與 `409 need_proxy` 設計（misc.py 註解於 Phase 7.7g 即預留此信號），本次僅補齊「前端消費信號」+「mjpeg/qtrle 也納入 need_proxy」兩處缺口。
+
+---
+
+## 任務（續）：音頻 Inspector 預覽是「白框」、看不到播放器
+日期：2026-08-29
+
+### Root Cause（與上輪不同）
+- 上輪修的是「編碼不相容→建代理」；但純音頻檔本身可播，問題在渲染：舊 `useAudio` 分支把原生
+  `<audio controls>` 用 `position:absolute` 貼在 16:9 預覽盒底部，而瀏覽器/WebView 的原生 audio
+  控制條是白色長條，在深色預覽盒上像個「白框」、易被忽略，部分 WebView 甚至不顯示播放鈕。
+- 確認：`Thumb` 元件對 audio 畫的是深色抽象塊（非白框），故 `useAudio` 確實為 true、音頻元素有渲染，
+  只是原生白色控制條造成「白框」觀感。音頻檔 `thumbnail_path=None` → 無縮圖干擾。
+
+### 完成項目
+- [x] `Inspector.svelte`：音頻預覽改為**自訂主題化播放器**——置中圓形播放/暫停鈕（`togglePlay`/`onPlay`/`onPause`）+ 隱藏原生 `<audio>`（不帶 `controls`）+ 時間碼，背景用 `var(--surface-2)`，不再依賴瀏覽器白色原生控制條。
+- [x] 新增 `playing` 狀態、reset 於 `videoSrc` 變更時。
+- [x] 重建容器 image 並重新部署（新 image，`health: healthy`）。
+
+### 測試結果
+```
+frontend npm run build -> ✓ built (216 modules, 無 Svelte 錯誤)
+容器內 curl id=121 (.mp3) -> HTTP 200 | audio/mpeg   (音頻流可播)
+app HTTP 200 (新前端已上線)
+```
+⚠️ 前端 UI 仍僅經編譯驗證，未在瀏覽器實機點擊；建議上線後對一支 .mp3 實測圓形播放鈕是否出現並可播。
+
+### 與 spec 不一致之處
+- 無。僅調整音頻預覽的呈現方式（自訂播放鈕替代原生控制條），不改播放管線語意。

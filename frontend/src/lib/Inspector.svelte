@@ -36,11 +36,21 @@
   // or a 409 need_proxy JSON body it received instead of media). Surfaced as a
   // proxy-build affordance so the clip can be played.
   let mediaError = null
+  // Custom play/pause for the audio player (native <audio> controls render as an
+  // unthemed white bar in the preview — easy to miss / not shown in some WebViews).
+  let playing = false
   function onMediaError() {
     mediaError = '此素材編碼瀏覽器無法直接播放，需先生成代理'
   }
+  function togglePlay() {
+    if (!playerEl) return
+    if (playerEl.paused) playerEl.play().catch(() => {})
+    else playerEl.pause()
+  }
+  function onPlay() { playing = true }
+  function onPause() { playing = false }
   // A new src (e.g. once a proxy is built) clears the error and reloads cleanly.
-  $: if (videoSrc) mediaError = null
+  $: if (videoSrc) { mediaError = null; playing = false }
   // Frame features only make sense for a video with a known, sane fps.
   $: frameExact = useVideo && typeof fps === 'number' && fps > 0
 
@@ -381,10 +391,20 @@
       <!-- svelte-ignore a11y-media-has-caption -->
       <video bind:this={playerEl} on:timeupdate={onTimeUpdate} on:loadedmetadata={onLoadedMeta} on:error={onMediaError} class="previmg" controls playsinline preload="metadata" poster={thumbUrl || undefined} src={videoSrc}></video>
     {:else if useAudio}
-      {#if thumbUrl && !imgFailed}
-        <img class="previmg" src={thumbUrl} alt={media.name} on:error={() => (imgFailed = true)} />
-      {/if}
-      <audio bind:this={playerEl} on:timeupdate={onTimeUpdate} on:loadedmetadata={onLoadedMeta} on:error={onMediaError} class="prevaudio" controls preload="metadata" src={videoSrc}></audio>
+      <div class="audioplay">
+        <button class="audiobtn" on:click={togglePlay} aria-label="播放 / 暫停">{playing ? '❚❚' : '▶'}</button>
+        <audio
+          bind:this={playerEl}
+          on:timeupdate={onTimeUpdate}
+          on:loadedmetadata={onLoadedMeta}
+          on:play={onPlay}
+          on:pause={onPause}
+          on:error={onMediaError}
+          preload="metadata"
+          src={videoSrc}
+        ></audio>
+        <div class="audiotc">{_tc(playerEl ? playerEl.currentTime : 0)} / {_tc(mediaDuration || 0)}</div>
+      </div>
     {:else if thumbUrl && !imgFailed}
       <img class="previmg" src={thumbUrl} alt={media.name} on:error={() => (imgFailed = true)} />
     {:else}
@@ -695,6 +715,21 @@
   /* the real player: contain (don't crop footage) on black; audio sits at the bottom */
   video.previmg { object-fit: contain; background: #000; }
   .prevaudio { position: absolute; left: 12px; right: 12px; bottom: 12px; width: auto; }
+  /* Custom audio player: a themed, clearly-visible play control instead of the
+     browser's native white <audio> bar (which read as a blank "white box" in the
+     dark preview and isn't rendered at all in some WebViews). */
+  .audioplay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px; padding: 18px;
+    background: var(--surface-2);
+  }
+  .audiobtn {
+    width: 58px; height: 58px; border-radius: 50%; cursor: pointer;
+    border: 1px solid var(--rule); background: var(--invert); color: var(--invert-ink);
+    font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  }
+  .audiobtn:hover { opacity: 0.9; }
+  .audiotc { color: var(--ink-2); font-family: var(--ak-mono); font-size: 11px; }
   .panoload { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--surface-2); }
   .scrim {
     position: absolute; left: 0; right: 0; bottom: 0; height: 40%;

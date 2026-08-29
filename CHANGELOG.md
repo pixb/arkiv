@@ -11,6 +11,11 @@
   媒體錯誤後顯示「生成代理並播放」，點擊即 `POST /api/proxy/build/{id}`、輪詢至代理就緒後自動重載。
   （codec.py / routers/misc.py:63 / frontend/src/lib/Inspector.svelte / MainLive.svelte / api.js）
 
+- **音頻預覽不再是一片「白框」。** 舊實作把原生 `<audio controls>` 絕對定位貼在預覽盒底部，
+  瀏覽器/WebView 的原生 audio 控制條是白色長條，在深色預覽上看起來像個白框且易被忽略。
+  現改為自訂的主題化播放器：置中圓形播放/暫停鈕 + 隱藏原生 audio 元素 + 時間碼，背景用
+  `var(--surface-2)`，不依賴瀏覽器白色原生控制條。（frontend/src/lib/Inspector.svelte）
+
 ## v1.1.2 - 2026-08-24
 
 **Nothing in this release changes what arkiv does.** It exists so that three changes to the
