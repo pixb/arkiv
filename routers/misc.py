@@ -73,20 +73,26 @@ def stream_media(media_id: int, _tok: dict = Depends(require_scopes("videos_read
     # user's content under the same media_id.
     resolved_src = _resolve_media_path(rec["path"])
 
+    # Images are always served as-is — no proxy needed, and an MP4 proxy served
+    # as <img src> would show nothing (the browser can't render video in an img
+    # tag). Check BEFORE the proxy gate so images never pick up a proxy.
+    is_image = Path(resolved_src).suffix.lower() in mediatypes.IMAGE_EXT
+
     # Pick a candidate first, then put EVERY candidate through the same gate.
     # The old shape returned arkiv's proxy early, which was fine while ours was
     # the only alternative — it is H.264 by construction. It stops being fine the
     # moment a second candidate exists: a ProRes original sitting next to a ProRes
     # sidecar proxy would have been declared playable purely because a file was
     # found, and the browser would show "cannot play" with no explanation.
-    arkiv_proxy = config.proxy_path_for(media_id, resolved_src)
-    if _proxy_ready(arkiv_proxy):
-        # Ours is H.264 by construction — the one candidate that needs no probe.
-        return FileResponse(
-            path=str(arkiv_proxy),
-            media_type="video/mp4",
-            filename=Path(resolved_src).stem + "_proxy.mp4",
-        )
+    if not is_image:
+        arkiv_proxy = config.proxy_path_for(media_id, resolved_src)
+        if _proxy_ready(arkiv_proxy):
+            # Ours is H.264 by construction — the one candidate that needs no probe.
+            return FileResponse(
+                path=str(arkiv_proxy),
+                media_type="video/mp4",
+                filename=Path(resolved_src).stem + "_proxy.mp4",
+            )
 
     # A cutting-room sidecar. `.mxf` is excluded on purpose: a browser cannot demux
     # it whatever the codec inside, so serving one is a guaranteed black player.
@@ -169,7 +175,9 @@ def stream_media(media_id: int, _tok: dict = Depends(require_scopes("videos_read
 
     mime, _ = mimetypes.guess_type(str(file_path))
     if not mime:
-        mime = "video/mp4"
+        # mimetypes doesn't know .webp; map common image extensions explicitly.
+        _IMG_MIME = {".webp": "image/webp", ".avif": "image/avif", ".heic": "image/heic"}
+        mime = _IMG_MIME.get(file_path.suffix.lower()) or ("image/jpeg" if is_image else "video/mp4")
     return FileResponse(
         path=str(file_path),
         media_type=mime,

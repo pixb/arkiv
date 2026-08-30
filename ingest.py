@@ -680,6 +680,8 @@ def generate_proxy(media_id: int, path: str, force: bool = False,
     height defaults to config.PROXY_HEIGHT; hwaccel defaults to
     config.PROXY_HWDECODE_DEFAULT (Apple Silicon VideoToolbox decode). A hardware
     decode that a given source can't support falls back to software automatically."""
+    if Path(path).suffix.lower() in mediatypes.IMAGE_EXT:
+        return None  # images need no proxy; served as-is
     if height is None:
         height = config.PROXY_HEIGHT
     if hwaccel is None:
