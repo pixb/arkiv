@@ -1079,6 +1079,13 @@ def set_canonical_tags(media_id: int, tags: list) -> None:
             "UPDATE media SET canonical_tags=? WHERE id=?",
             (_json.dumps(tags, ensure_ascii=False), media_id),
         )
+    # Re-embed so the new canonical tags are immediately searchable (best-effort;
+    # an Ollama outage must not fail the tag write).
+    try:
+        import embed
+        embed.reindex_media(media_id)
+    except Exception as _e:
+        print("[warn] reindex after set_canonical_tags failed (non-fatal):", _e)
 
 
 def get_stats() -> Dict:
@@ -1137,6 +1144,24 @@ def get_tags(media_id: int) -> List[Dict]:
             (media_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_manual_tags_by_ids(ids: List[int]) -> Dict[int, List[str]]:
+    """Bulk fetch manual tags (source='manual') keyed by media_id. Used by the
+    vector index so user-authored tags enter semantic search (arkiv handover)."""
+    out = {int(i): [] for i in ids}
+    if not ids:
+        return out
+    placeholders = ",".join("?" * len(ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT media_id, name FROM tags WHERE source='manual' "
+            "AND media_id IN (%s)" % placeholders,
+            tuple(int(i) for i in ids),
+        ).fetchall()
+    for r in rows:
+        out.setdefault(int(r["media_id"]), []).append(r["name"])
+    return out
 
 
 def add_tag(media_id: int, name: str, source: str = "manual", _conn=None):
