@@ -293,6 +293,59 @@ def build_doc_text(record: dict) -> str:
                     chunks.append(kw.strip())
             if chunks:
                 parts.append(" ".join(chunks))
+    manual = record.get("manual_tags")
+    if manual:
+        parts.append(" ".join(t for t in manual if isinstance(t, str) and t.strip()))
+    canon = record.get("canonical_tags")
+    if canon:
+        if isinstance(canon, str):
+            try:
+                canon = json.loads(canon)
+            except (json.JSONDecodeError, TypeError):
+                canon = [canon]
+        if isinstance(canon, (list, tuple)):
+            parts.append(" ".join(str(t) for t in canon if isinstance(t, str) and t.strip()))
+    return " ".join(parts)
+
+
+def build_tag_doc(record: dict) -> str:
+    """Searchable text from filename + frame_tags + manual/canonical tags — i.e.
+    everything EXCEPT the transcript. Used for the always-present '_f0' tag chunk
+    so tag/vision search works even for clips that also have a transcript (previously
+    only transcript chunks were indexed for those, dropping all visual/tag signal)."""
+    parts = ["[%s]" % record.get("filename", "")]
+    ft = record.get("frame_tags")
+    if ft:
+        try:
+            frames = json.loads(ft) if isinstance(ft, str) else ft
+        except (json.JSONDecodeError, TypeError):
+            frames = []
+        if isinstance(frames, list):
+            for f in frames:
+                if not isinstance(f, dict):
+                    continue
+                desc = f.get("description")
+                if isinstance(desc, str) and desc.strip():
+                    parts.append(desc.strip())
+                tags_field = f.get("tags")
+                if isinstance(tags_field, list):
+                    parts.extend(t.strip() for t in tags_field
+                                 if isinstance(t, str) and t.strip())
+                kw = f.get("keywords")
+                if isinstance(kw, str) and kw.strip():
+                    parts.append(kw.strip())
+    manual = record.get("manual_tags")
+    if manual:
+        parts.append(" ".join(t for t in manual if isinstance(t, str) and t.strip()))
+    canon = record.get("canonical_tags")
+    if canon:
+        if isinstance(canon, str):
+            try:
+                canon = json.loads(canon)
+            except (json.JSONDecodeError, TypeError):
+                canon = [canon]
+        if isinstance(canon, (list, tuple)):
+            parts.append(" ".join(str(t) for t in canon if isinstance(t, str) and t.strip()))
     return " ".join(parts)
 
 
@@ -323,7 +376,6 @@ def upsert_record(col, record: dict) -> int:
     # would stack stale vectors (H5).
     delete_media(col, media_id)
     transcript = record.get("transcript") or ""
-    frame_doc = build_doc_text(record)
 
     meta_base = {
         "media_id": media_id,
@@ -337,6 +389,15 @@ def upsert_record(col, record: dict) -> int:
 
     ids, embeddings, documents, metadatas = [], [], [], []
 
+    # Always index the tag/vision chunk (_f0) — even for clips that also have a
+    # transcript — so manual/canonical/frame tags are searchable regardless.
+    tag_doc = build_tag_doc(record)
+    if tag_doc.strip():
+        ids.append(f"{media_id}_f0")
+        documents.append(tag_doc)
+        embeddings.append(embed(tag_doc))
+        metadatas.append({**meta_base, "chunk_type": "tags", "chunk_idx": 0})
+
     if transcript:
         chunks = chunk_text(transcript)
         vectors = embed_batch(chunks)  # audit M27: one HTTP call for all chunks
@@ -346,13 +407,6 @@ def upsert_record(col, record: dict) -> int:
             documents.append(chunk)
             embeddings.append(vec)
             metadatas.append({**meta_base, "chunk_type": "transcript", "chunk_idx": i})
-    else:
-        # No transcript — embed frame tags / filename only
-        doc_id = f"{media_id}_f0"
-        ids.append(doc_id)
-        documents.append(frame_doc)
-        embeddings.append(embed(frame_doc))
-        metadatas.append({**meta_base, "chunk_type": "frame_tags", "chunk_idx": 0})
 
     try:
         col.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
