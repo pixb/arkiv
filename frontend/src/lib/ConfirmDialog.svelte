@@ -25,7 +25,14 @@
       }
     }}
   >
-    <div class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
+    <div
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|stopPropagation
+      on:keydown={(e) => e.stopPropagation()}
+    >
       <div class="title">{title}</div>
       {#if message}<div class="msg">{message}</div>{/if}
       <div class="actions">
