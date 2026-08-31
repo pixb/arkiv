@@ -86,3 +86,14 @@ OVERNIGHT_UI_BUILD.md
 .testdata/
 frontend/vite.config.tailnet.js
 frontend/vite.config.dev8502.js
+
+# ── Local-only / non-upstream files (private-fork hygiene) ────────────────
+# These carry no value upstream and/or hold secrets; never commit them.
+# (gitignore has no inline comments — keep the note above, pattern below)
+devdoc
+CODEX_RESULT.md
+docs/*handover*
+.opencode
+agent-skill-creator
+# Settings overrides per-install — never commit local state.
+settings.local.json
