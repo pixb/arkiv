@@ -28,6 +28,7 @@ from pydantic import BaseModel, field_validator
 import config
 import corrections
 import db
+import embed
 import media_delete
 import mediatypes
 import progress
@@ -809,6 +810,10 @@ def add_tag(
     if not rec:
         raise HTTPException(404, "找不到")
     db.add_tag(media_id, body.name, body.source)
+    try:
+        embed.reindex_media(media_id)
+    except Exception as e:
+        print("[warn] reindex after add_tag failed (non-fatal):", e)
     return {"ok": True, "tags": db.get_tags(media_id)}
 
 
@@ -819,6 +824,10 @@ def remove_tag(
     _tok: dict = Depends(require_scopes("videos_write")),
 ):
     db.remove_tag(media_id, tag_name)
+    try:
+        embed.reindex_media(media_id)
+    except Exception as e:
+        print("[warn] reindex after remove_tag failed (non-fatal):", e)
     return {"ok": True, "tags": db.get_tags(media_id)}
 
 

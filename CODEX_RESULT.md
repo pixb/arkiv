@@ -1,39 +1,47 @@
-# CODEX_RESULT — 刪除 clip 不同步移除精選集
+# CODEX_RESULT — 手動/正規化 tag 與視覺 tag 全部進向量索引
 
 日期: 2026-08-30
-範圍: `/vol1/1000/docker/nec8-docker/arkiv`（docker 部署專案，Phase 14.5 含 unified media delete）
+分支: `feat/tags-in-vector-index` (pixb) → `vulture-s/arkiv:main`
+PR: https://github.com/vulture-s/arkiv/pull/404
+同時已部署到 docker 實機 `/vol1/1000/docker/nec8-docker/arkiv` 並重建 image + 重啟容器。
 
-## 完成項目
+## 1. 完成了什麼
+- [x] `vectordb.build_doc_text` 折入 manual tags (`source='manual'`) + `canonical_tags`
+- [x] 新增 `vectordb.build_tag_doc`（filename + frame_tags + manual + canonical，不含 transcript）
+- [x] `vectordb.upsert_record` 對「所有」clip（含含逐字稿者）恆產生 `_f0` tag 分塊 → 有逐字稿影片的視覺/tag 信號不再落空
+- [x] `embed.get_content_signatures` 的 `content_hash` 納入 tags → 改 tag 被鮮度檢查視為 stale 而自動重嵌
+- [x] 新增 `embed.reindex_media(media_id)` 單筆即時重嵌
+- [x] `routers/media.add_tag` / `remove_tag` 與 `db.set_canonical_tags` 寫入後 best-effort 觸發 `reindex_media`（Ollama 異常不影響打 tag）
+- [x] 實機 418-clip 庫跑過一次 `python embed.py` incremental（110 個有 tag 的 clip 被重嵌）
+- [x] 端到端驗證：搜「筆刷」→ brush.mp4 排 #1、brush_m.mp4 排 #4（兩者都打了手動 tag 筆刷）
 
-- [x] 根因定位：`media_delete.delete_media_full` 刪除 media 時，未從 `bins.py` 的精選集移除該 `media_id`，導致 bin 計數不遞減（如 空鏡 19 → 刪 1 仍顯示 19）。
-- [x] 在 `bins.py` 新增 `remove_media_from_all_bins(project_name, media_id)`：遍歷所有 bin，移除所有 `project_name + media_id` 相符項；`project_name=None` 時回退為僅比對 `media_id`。
-- [x] 在 `media_delete.delete_media_full` 串接呼叫：成功刪除後，依 `config.PROJECT_ROOT` 經 `projects.discover_projects()` 解析目前 `project_name`，呼叫 `bins_store.remove_media_from_all_bins(project_name, media_id)`（best-effort，catch 後記 warning，不影響刪除主流程）。
-- [x] 容器即時生效：`docker cp` bins.py + media_delete.py 進 `arkiv-arkiv-1` 並重啟；後已 `docker compose build` 重建 image `arkiv-arkiv` + `--force-recreate` 容器，`health http=200`。
+## 2. 測試結果（實機直跑，非回憶）
+容器 `arkiv-arkiv-1` 內直跑：
+```
+build_doc_text has manual: True
+build_doc_text has canonical: True
+build_tag_doc excludes transcript: True
+manual tag searchable after reindex_media: True
+manual tag gone after remove+reindex: True
+canonical tag searchable via set_canonical_tags hook: True
+ALL E2E CHECKS DONE
+```
+搜「筆刷」top-8（節錄）：
+```
+[0.521] id=118 brush.mp4   ← 手動 tag 筆刷/轉場
+[0.489] id=119 brush_m.mp4 ← 手動 tag 筆刷/轉場
+```
+embed.py 實機報告：`Total: 418 | indexed: 418 | stale: 110 | content-unchanged: 308 → to embed: 110`，全部 OK。
+4 個改動檔 `py_compile` 全過（docker 與 github clone 兩份皆過）。
 
-## 測試結果
+## 3. ⚠️ REVIEW
+- **tagless 的含逐字稿 clip 仍未補 `_f0`**：它們 content_hash 沒變 → incremental 不會重嵌，舊索引布局維持（無 `_f0`）。若要讓「所有」含逐字稿 clip 的視覺搜尋都生效，需跑一次 `python embed.py --rebuild`（全庫重嵌，較重）。本次只重嵌了有 tag 的 110 個，符合使用者直接需求（打 tag 才要搜得到），但是 vision-only 搜尋對無 tag 的長片未改善。
+- **`db.set_canonical_tags` 現在會觸發 `reindex_media`**：在 `_run_canonicalize_tags` 批量回填（每 media 一次 LLM + 一次 reindex）時會逐筆重嵌，屬一次性後台作業，可接受，但留意 Ollama 負載。
+- **index 體積略增**：每 clip 多 1 個 `_f0` 分塊（之後全庫 rebuild 後全數生效）。
 
-1. 單元測試（隔離 `ARKIV_BINS_PATH=/tmp/opencode/test_bins.json`）：
-   - A=[main/9, main/5], B=[main/9, other/9] → `remove_media_from_all_bins("main", 9)`
-   - 結果：A=[main/5]（9 移除、5 保留），B=[other/9]（跨 project 不誤傷）= **PASS**
-   - 回退路徑 `project_name=None`：僅比對 media_id，移除所有 project 下該 id = **PASS**
+## 4. 未完成
+- 全庫 `--rebuild`（讓無 tag 的含逐字稿 clip 也拿到 `_f0`）尚未跑——視需求再決定。
 
-2. 容器內真端到端（可逆，假 clip 999999）：
-   - 臨時 `ARKIV_BINS_PATH=/tmp/e2e_bins.json`，bin 含 `{project_name:"app", media_id:"999999"}`
-   - 插入假 row → `delete_media_full(999999)` → bin items 變為 `[]` = **E2E PASS**
-   - `current project name: app`（scoped 路徑確實觸發）
-
-3. 載入健全性：容器內 `remove_media_from_all_bins in dir(bins)` = True；`media_delete.py` 含呼叫 = True。
-
-## 疑慮 / REVIEW
-
-- ⚠️ 此修復**僅適用 docker 專案**。github fork（`~/dev/code/github/arkiv`，基於 vulture-s/arkiv:main）無 `media_delete.py`、亦無 `DELETE /api/media/{id}` 路由（其刪除走 `db.delete_media` 直接呼叫，見 `sample_prebuilt.py:239`）。故無對應 upstream PR 目標；若要 upstream，需先將 Phase 14.5 unified delete 整體移植。
-- ⚠️ `delete_media_full` 的 bins 清理為 best-effort（catch 後 warning）。若 `bins.json` 鎖損或 `project_name` 解析失敗，會記 warning 但不中斷刪除，bin 可能殘留——與「刪除優先成功」的設計權衡一致，但建議後續於 UI 用 `bin_item_status` 標記失效項而非靜默殘留。
-
-## 未完成
-
-- [ ] 未 commit（依規範待使用者確認後再 commit docker 專案 bins.py / media_delete.py）。
-- [ ] 未加 regression test 到 `tests/test_media_delete.py`（可加：插入假 media + bin，刪除後斷言 bin 該項消失）。
-
-## 與 spec 不一致
-
-- 無偏離 config 預設閾值，無新增依賴。
+## 5. 與 spec / 現有行為的不一致
+- 原 `upsert_record` 對「含逐字稿」clip 只嵌 transcript 分塊、完全不嵌 vision/frame tags，這是既有的搜尋盲點；本變更改為「恆嵌 `_f0` tag 分塊」，屬行為修正而非單純加功能。
+- 索引組成改變（新增 `_f0` 分塊）會使舊 `embed_hash` 失配而整批 stale，已在部署步驟用一次 incremental 消化。
