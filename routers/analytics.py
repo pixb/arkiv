@@ -9,6 +9,7 @@ server.ROOT for the disk-usage fallback. Imports auth + db + config +
 tag_quality/tag_aliases/smart_collections/projects — no server import, no cycle.
 """
 from fastapi import APIRouter, Depends
+import os
 
 import collection_defs
 import config
@@ -55,7 +56,17 @@ def get_stats(
     try:
         import shutil
         _db_path = db.get_db_path()  # R5-23 (#54): SSOT accessor, not config value
-        du = shutil.disk_usage(_db_path.parent if _db_path else BASE_DIR)
+        # Measure the DB file itself, not its parent dir: media.db is a bind
+        # mount onto the real data volume (/vol1), whereas /app in Docker is an
+        # overlay backed by the host root fs — disk_usage('/app') would report
+        # the wrong (host-root) disk. Fall back to the parent only if the file
+        # does not exist yet (fresh install before init_db creates it).
+        _du_target = (
+            _db_path
+            if (_db_path and os.path.exists(_db_path))
+            else (_db_path.parent if _db_path else BASE_DIR)
+        )
+        du = shutil.disk_usage(_du_target)
         stats["disk"] = {
             "used_gb": round(du.used / 1e9, 1),
             "total_gb": round(du.total / 1e9, 1),

@@ -75,6 +75,18 @@ def _non_mac_backend() -> str:
     force the legacy path."""
     return os.getenv("ARKIV_TRANSCRIBE_BACKEND", "faster-whisper").strip().lower()
 
+
+# Whisper compute device. Defaults to "cuda" (the GPU dev box). On a GPU-less
+# host — e.g. the remote-Ollama Docker deploy running on a CPU-only machine —
+# faster-whisper would otherwise try CUDA and crash with "CUDA driver version
+# is insufficient for CUDA runtime version". Set ARKIV_WHISPER_DEVICE=cpu there.
+WHISPER_DEVICE = os.getenv("ARKIV_WHISPER_DEVICE", "cuda").strip().lower()
+
+# float16 is only efficient on CUDA. On CPU, faster-whisper/ctranslate2 reject
+# it ("target device or backend do not support efficient float16 computation"),
+# so fall back to int8 — same accuracy for transcription, ~2x slower but it runs.
+WHISPER_COMPUTE_TYPE = "int8" if WHISPER_DEVICE == "cpu" else "float16"
+
 # ── Model Singletons ────────────────────────────────────────────────────────
 WHISPER_GUARD_ACTIVE_MODE = WHISPER_GUARD_DEFAULT_MODE
 WHISPER_GUARD_ACTIVE_LAYER = WHISPER_GUARD_LAYERS[WHISPER_GUARD_ACTIVE_MODE]
@@ -308,13 +320,13 @@ def warm_up():
             import whisperx
             _whisperx_model = whisperx.load_model(
                 WHISPER_MODEL,
-                "cuda",
-                compute_type="float16",
+                WHISPER_DEVICE,
+                compute_type=WHISPER_COMPUTE_TYPE,
             )
             print("  [whisperx on cuda]", flush=True)
         else:
             from faster_whisper import WhisperModel
-            _fw_model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
+            _fw_model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE)
             print("  [faster-whisper on cuda]", flush=True)
 
         _whisper_loaded = True
@@ -540,14 +552,14 @@ def _transcribe_whisperx(wav: str, language: str) -> tuple:
 
     align_model, align_meta = whisperx.load_align_model(
         language_code=lang,
-        device="cuda",
+        device=WHISPER_DEVICE,
     )
     result = whisperx.align(
         result["segments"],
         align_model,
         align_meta,
         audio,
-        "cuda",
+        WHISPER_DEVICE,
         return_char_alignments=False,
     )
 
