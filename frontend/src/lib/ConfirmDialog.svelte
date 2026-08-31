@@ -13,8 +13,19 @@
 </script>
 
 {#if open}
-  <div class="backdrop" on:click={() => !busy && dispatch('cancel')}>
-    <div class="modal" role="dialog" aria-modal="true" on:click|stopPropagation>
+  <div
+    class="backdrop"
+    role="button"
+    tabindex="-1"
+    on:click={() => !busy && dispatch('cancel')}
+    on:keydown={(e) => {
+      if (!busy && (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape')) {
+        e.preventDefault()
+        dispatch('cancel')
+      }
+    }}
+  >
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
       <div class="title">{title}</div>
       {#if message}<div class="msg">{message}</div>{/if}
       <div class="actions">

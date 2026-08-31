@@ -14,7 +14,7 @@ arkiv does not own, and record a warning in the audit log.
 
 Reused by:
 - DELETE /api/media/{id} and POST /api/media/bulk-delete (routers/media.py)
-- POST /api/admin/prune-missing (routers/admin.py) with allow_file_delete=False
+- POST /api/media/prune-missing (routers/media.py) with allow_file_delete=False
 - routers/sample.py remove (so sample cleanup also nukes proxies/waveforms)
 """
 import json

@@ -68,8 +68,19 @@
 </script>
 
 {#if open}
-  <div class="backdrop" on:click={() => dispatch('close')}>
-    <div class="modal" role="dialog" aria-modal="true" on:click|stopPropagation>
+  <div
+    class="backdrop"
+    role="button"
+    tabindex="-1"
+    on:click={() => dispatch('close')}
+    on:keydown={(e) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
+        e.preventDefault()
+        dispatch('close')
+      }
+    }}
+  >
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
       <div class="head">
         <Eyebrow>回收桶 · Trash</Eyebrow>
         <div class="head-actions">
