@@ -9,6 +9,15 @@ services:
       - ./media.db:/app/media.db
       - ./chroma_db:/app/chroma_db
       - ./thumbnails:/app/thumbnails
+      # Cross-library 精選集 (bins.py) persistence. Default storage is
+      # ~/.arkiv-bins.json (=/root/.arkiv-bins.json inside the container),
+      # which lives in the container's ephemeral layer — without this bind mount,
+      # `docker compose down` / image rebuild / `--force-recreate` silently
+      # wipes every bin the user has saved. Mount the *directory*, not the file:
+      # bind-mounting a single file that doesn't exist on the host makes Docker
+      # create a directory at the source path, which pollutes ./arkiv_data.
+      # ARKIV_BINS_PATH pins the file inside the mount; bins.py already honours it.
+      - ./arkiv_data/bins:/root/.arkiv-bins
     environment:
       - ARKIV_DB_PATH=/app/media.db
       - ARKIV_CHROMA_PATH=/app/chroma_db
@@ -30,6 +39,8 @@ services:
       # caller full admin with no token. Keep bridge + port mapping.
       - ARKIV_HOST=0.0.0.0
       - ARKIV_PORT=8501
+      # See the ./arkiv_data/bins volume mount above; keep the path in sync.
+      - ARKIV_BINS_PATH=/root/.arkiv-bins/bins.json
     depends_on:
       ollama:
         condition: service_healthy   # F6: wait for ollama READY, not just container-start
