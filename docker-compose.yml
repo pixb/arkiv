@@ -86,10 +86,15 @@ services:
     # macOS: GPU passthrough not needed (Ollama uses Metal natively on host)
     restart: unless-stopped
 
-  # HTTP/SSE MCP server (LAN build): exposes arkiv's read-only tools to MCP
-  # clients (Claude Desktop/Code) over SSE on 8502. Reuses the already-built
-  # arkiv-arkiv image and the same token library (media.db) — no extra auth.
+  # HTTP/SSE MCP server: exposes arkiv's read-only tools to MCP clients
+  # (Claude Desktop/Code) over SSE on 8502. Reuses the already-built arkiv-arkiv
+  # image and the same token library (media.db) — no extra auth.
   # Point ARKIV_OLLAMA_URL at your Ollama; override per-deploy via env.
+  #
+  # Loopback-bound by default (127.0.0.1): a LAN-facing MCP endpoint must be an
+  # opt-in decision, not a `docker compose up` default. To expose it:
+  #   1. set ARKIV_MCP_BIND=0.0.0.0 below, AND
+  #   2. uncomment the ports: mapping and set your own host port.
   arkiv-mcp:
     image: arkiv-arkiv
     command: python mcp_http_server.py
@@ -98,14 +103,14 @@ services:
       - ARKIV_CHROMA_PATH=/app/chroma_db
       - ARKIV_OLLAMA_URL=${ARKIV_OLLAMA_URL:-http://ollama:11434}
       - ARKIV_EMBED_MODEL=bge-m3
-      - ARKIV_MCP_BIND=0.0.0.0
+      - ARKIV_MCP_BIND=127.0.0.1
       - ARKIV_MCP_PORT=8502
     volumes:
       - ./media.db:/app/media.db
       - ./chroma_db:/app/chroma_db
       - ./arkiv_data:/app/.arkiv
-    ports:
-      - "8502:8502"
+    # ports:                       # ← uncomment + set a host port to go LAN-facing
+    #   - "8502:8502"
     restart: unless-stopped
     # Inherited HEALTHCHECK probes localhost:8501 (main app); this service only
     # listens on 8502, so disable it to avoid a permanent unhealthy report.

@@ -9,19 +9,21 @@ Run (as the `arkiv-mcp` compose service):
     python mcp_http_server.py
 
 Env:
-    ARKIV_MCP_BIND    bind address   (default 0.0.0.0)
+    ARKIV_MCP_BIND    bind address   (default 127.0.0.1 — LAN exposure is opt-in)
     ARKIV_MCP_PORT    listen port    (default 8502)
     ARKIV_DB_PATH     sqlite db path (must match the arkiv service; token store lives here)
     ARKIV_CHROMA_PATH chroma dir     (for semantic search)
 
-Auth: every request must carry a valid arkiv token, via either
-`Authorization: Bearer <token>` or `?token=<token>`. We reuse
+Auth: every request must carry a valid arkiv token via the `Authorization:
+Bearer <token>` header (a token in a URL leaks into access logs, proxies and
+browser history — never accept it as a query param). We reuse
 auth.resolve_raw_token — the exact same token store + IP-allowlist + expiry as
 the HTTP API — so the existing `ui-test` token works unchanged.
 
-Security: this server is LAN-facing. Always require a token and never publish
-8502 to the public internet (use a VPN/firewall). Read-only tools only; no
-ingest/delete is ever exposed.
+Security: this server is token-gated and loopback-bound by default. To expose it
+to the LAN you must deliberately set ARKIV_MCP_BIND=0.0.0.0; even then, never
+publish 8502 to the public internet (use a VPN/firewall). Read-only tools only;
+no ingest/delete is ever exposed.
 """
 from __future__ import annotations
 
@@ -33,22 +35,23 @@ from fastapi import HTTPException
 import auth
 import mcp_server
 
-BIND = os.getenv("ARKIV_MCP_BIND", "0.0.0.0")
+BIND = os.getenv("ARKIV_MCP_BIND", "127.0.0.1")
 PORT = int(os.getenv("ARKIV_MCP_PORT", "8502"))
 
 
 def _extract_token(scope):
-    """Pull a raw token from the Authorization header or ?token= query param."""
+    """Pull a raw bearer token from the Authorization header only.
+
+    No `?token=` query param: a token in a URL persists in uvicorn access logs,
+    any reverse proxy in front of it, and browser history — three places that
+    outlive the request and are not scrubbed. Clients that can't set a header
+    should do so on their side instead."""
     for name, value in scope.get("headers", []):
         if name == b"authorization":
             raw = value.decode("latin-1", "replace")
             if raw.lower().startswith("bearer "):
                 return raw[7:].strip()
             return raw.strip()
-    qs = scope.get("query_string", b"").decode("latin-1", "replace")
-    for pair in qs.split("&"):
-        if pair.startswith("token="):
-            return pair[len("token="):]
     return ""
 
 
