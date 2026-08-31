@@ -19,6 +19,7 @@ FROM python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627a
 RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    libimage-exiftool-perl \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
