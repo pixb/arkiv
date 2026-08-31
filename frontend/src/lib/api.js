@@ -493,10 +493,10 @@ export const restoreTrash = (trashId, opts) =>
     method: 'POST',
     ...opts,
   })
-// POST /api/admin/prune-missing {dry_run} → {scanned, pruned, pruned_ids, dry_run}.
+// POST /api/media/prune-missing {dry_run} → {scanned, pruned, pruned_ids, dry_run}.
 // Clears ghost rows whose source file was manually deleted. Requires media_delete.
 export const pruneMissing = (dryRun = true, opts) =>
-  req(`/api/admin/prune-missing${qs({ dry_run: dryRun ? 1 : 0 })}`, {
+  req(`/api/media/prune-missing${qs({ dry_run: dryRun ? 1 : 0 })}`, {
     method: 'POST',
     ...opts,
   })
