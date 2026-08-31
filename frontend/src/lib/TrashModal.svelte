@@ -80,7 +80,14 @@
       }
     }}
   >
-    <div class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation>
+    <div
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      on:click|stopPropagation
+      on:keydown={(e) => e.stopPropagation()}
+    >
       <div class="head">
         <Eyebrow>回收桶 · Trash</Eyebrow>
         <div class="head-actions">
