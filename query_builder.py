@@ -59,6 +59,7 @@ _FIELDS: Dict[str, Tuple[Optional[str], set, str]] = {
 # in sync with server._VIDEO_EXTS / _AUDIO_EXTS).
 _VIDEO_EXTS = mediatypes.VIDEO_EXT
 _AUDIO_EXTS = mediatypes.AUDIO_EXT
+_IMAGE_EXTS = mediatypes.IMAGE_EXT
 
 
 def _one_condition(cond: Dict[str, Any]) -> Tuple[Optional[str], List[Any], Optional[str]]:
@@ -100,8 +101,10 @@ def _one_condition(cond: Dict[str, Any]) -> Tuple[Optional[str], List[Any], Opti
             exts = _VIDEO_EXTS
         elif v == "audio":
             exts = _AUDIO_EXTS
+        elif v == "image":
+            exts = _IMAGE_EXTS
         else:
-            raise QueryError("media_type must be 'video' or 'audio'")
+            raise QueryError("media_type must be 'video', 'audio', or 'image'")
         placeholders = ",".join("?" * len(exts))
         return "LOWER(ext) IN ({0})".format(placeholders), list(exts), None
 

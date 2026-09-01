@@ -27,6 +27,7 @@ SCOPES = frozenset((
     "ingest_write",
     "chat_read",
     "chat_write",
+    "media_delete",
     "admin",
 ))
 
