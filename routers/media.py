@@ -28,6 +28,7 @@ from pydantic import BaseModel, field_validator
 import config
 import corrections
 import db
+import media_delete
 import mediatypes
 import progress
 import tag_quality
@@ -137,6 +138,7 @@ class ActivateLangRequest(BaseModel):
 # both now come from the shared mediatypes source, so they can't drift apart.
 _VIDEO_EXTS = mediatypes.VIDEO_EXT
 _AUDIO_EXTS = mediatypes.AUDIO_EXT
+_IMAGE_EXTS = mediatypes.IMAGE_EXT
 
 
 @router.get("/api/media/position/{media_id}")
@@ -261,14 +263,14 @@ def list_media(
             rec["tags"] = tags_by_id.get(rec["id"], [])
         return {"items": records, "total": len(records), "search": True}
     if q:
-        enriched = []
         search_warning = None
         import vectordb as vdb
-        # audit M19: search used to ignore `offset` entirely (page 2 == page 1).
-        # Collect up to offset+limit matches, then slice the requested page.
-        # Capped so a huge ?offset can't inflate n_results / SQL LIMIT (audit
-        # H13-class DoS); search hits past 2000 are noise anyway.
-        needed = min(offset + limit, 2000)
+        # audit M19: search MUST paginate correctly. `total` is the STABLE number
+        # of matches (independent of `offset`), and only the requested page's light
+        # records are returned. SEARCH_CAP bounds the candidate set so a huge
+        # ?offset can't inflate the vector scan / SQL table scan (audit H13-class
+        # DoS); hits past 2000 are noise anyway.
+        SEARCH_CAP = 2000
 
         def _passes_filters(rec: dict) -> bool:
             # Applied to the ENRICHED record (which has real lang/rating), not the
@@ -289,6 +291,8 @@ def list_media(
             if media_type == "video" and ext not in _VIDEO_EXTS:
                 return False
             if media_type == "audio" and ext not in _AUDIO_EXTS:
+                return False
+            if media_type == "image" and ext not in _IMAGE_EXTS:
                 return False
             # Same class as H8/H14: a filter honoured only on the SQL path silently
             # stops applying the moment the user types a query.
@@ -311,30 +315,18 @@ def list_media(
                     return False
             return True
 
-        # Try semantic search first (requires vectordb with embeddings)
+        # Semantic pass: ALL vector nearest-neighbours up to SEARCH_CAP (ids +
+        # scores + excerpt). May be empty on degradation (search_warning set).
+        semantic: dict = {}
         try:
-            raw = vdb.search(q, n_results=needed * 3)
+            raw = vdb.search(q, n_results=SEARCH_CAP)
             seen = set()
-            ordered_ids = []
-            hit_by_id = {}
             for r in raw:
                 mid = int(r["media_id"])
                 if mid in seen:
                     continue
                 seen.add(mid)
-                ordered_ids.append(mid)
-                hit_by_id[mid] = r
-            # audit H16: one batched LIGHT_COLS fetch instead of per-hit SELECT *
-            for rec in _get_light_records_by_ids(ordered_ids):
-                if not _passes_filters(rec):
-                    continue
-                _resolve_record(rec)
-                hit = hit_by_id[rec["id"]]
-                rec["score"] = hit.get("score", 0)
-                rec["excerpt"] = hit.get("excerpt", "")
-                enriched.append(rec)
-                if len(enriched) >= needed:
-                    break
+                semantic[mid] = {"score": r.get("score", 0), "excerpt": r.get("excerpt", "")}
         except vdb.EmbeddingDimensionMismatch as exc:
             # Don't silently SQL-degrade a dim mismatch — log it and surface a hint
             # so the operator knows semantic search is off until they rebuild.
@@ -348,79 +340,86 @@ def list_media(
             )
             search_warning = "semantic search unavailable (SQL fallback used)"
 
-        # Fallback: SQL text search (filename, transcript, tags) — same lang/rating
-        # filter applied so a degraded search still honors the active filters.
-        if not enriched:
-            seen_ids = set()
-            like = f"%{q}%"
-            # audit H17: push the active filters into WHERE and bound the scan —
-            # the old query LIKE-scanned the whole table, built every matching
-            # record, then threw away everything past `limit`.
-            filter_sql = ""
-            filter_params: list = []
-            if lang:
-                filter_sql += " AND lang = ?"
-                filter_params.append(lang)
-            if rating == "unrated":
-                filter_sql += " AND rating IS NULL"
-            elif rating:
-                filter_sql += " AND rating = ?"
-                filter_params.append(rating)
-            if media_type == "video":
-                filter_sql += " AND ext IN ({0})".format(",".join("?" * len(_VIDEO_EXTS)))
-                filter_params.extend(sorted(_VIDEO_EXTS))
-            elif media_type == "audio":
-                filter_sql += " AND ext IN ({0})".format(",".join("?" * len(_AUDIO_EXTS)))
-                filter_params.extend(sorted(_AUDIO_EXTS))
-            # Third place this filter has to exist. The degraded-search path is the
-            # one users hit when Ollama is down, and a filter that quietly stops
-            # applying exactly then is worse than one that never worked. Built by the
-            # same helper as the list query rather than hand-written twice — the
-            # duplication is what let H8/H14 happen.
-            shot_sql, shot_params = db.shot_window_clause(
-                shot_year=shot_year, shot_date=shot_date
-            )
-            if shot_sql:
-                filter_sql += " AND " + shot_sql
-                filter_params.extend(shot_params)
-            with db.get_conn() as conn:
-                rows = conn.execute(
-                    f"SELECT {db.LIGHT_COLS} FROM media "
-                    "WHERE (filename LIKE ? OR transcript LIKE ?)" + filter_sql +
-                    " ORDER BY id LIMIT ?",
-                    (like, like, *filter_params, needed),
-                ).fetchall()
-                for r in rows:
-                    rec = dict(r)
-                    _resolve_record(rec)
-                    enriched.append(rec)
-                    seen_ids.add(rec["id"])
+        # Lexical pass (Direction 2): literal substring matches in filename /
+        # transcript / tags ALWAYS surface, even when their embedding ranks low by
+        # vector distance — so a clip that literally contains the query term is
+        # never invisible. Bounded by SEARCH_CAP (audit H17); the active filters
+        # are pushed into WHERE so the SQL path honours them too.
+        like = f"%{q}%"
+        filter_sql = ""
+        filter_params: list = []
+        if lang:
+            filter_sql += " AND lang = ?"
+            filter_params.append(lang)
+        if rating == "unrated":
+            filter_sql += " AND rating IS NULL"
+        elif rating:
+            filter_sql += " AND rating = ?"
+            filter_params.append(rating)
+        if media_type == "video":
+            filter_sql += " AND ext IN ({0})".format(",".join("?" * len(_VIDEO_EXTS)))
+            filter_params.extend(sorted(_VIDEO_EXTS))
+        elif media_type == "audio":
+            filter_sql += " AND ext IN ({0})".format(",".join("?" * len(_AUDIO_EXTS)))
+            filter_params.extend(sorted(_AUDIO_EXTS))
+        elif media_type == "image":
+            filter_sql += " AND ext IN ({0})".format(",".join("?" * len(_IMAGE_EXTS)))
+            filter_params.extend(sorted(_IMAGE_EXTS))
+        shot_sql, shot_params = db.shot_window_clause(shot_year=shot_year, shot_date=shot_date)
+        if shot_sql:
+            filter_sql += " AND " + shot_sql
+            filter_params.extend(shot_params)
+        lexical_ids: list = []
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id FROM media "
+                "WHERE (filename LIKE ? OR transcript LIKE ?)" + filter_sql +
+                " ORDER BY id LIMIT ?",
+                (like, like, *filter_params, SEARCH_CAP),
+            ).fetchall()
+            lexical_ids = [dict(r)["id"] for r in rows]
+            tag_rows = conn.execute(
+                "SELECT DISTINCT media_id FROM tags WHERE name LIKE ? LIMIT ?",
+                (like, SEARCH_CAP),
+            ).fetchall()
+        for tr in tag_rows:
+            tid = dict(tr)["media_id"]
+            if tid not in lexical_ids:
+                lexical_ids.append(tid)
 
-            # Also search by tag name (bounded — audit H17)
-            if len(enriched) < needed:
-                with db.get_conn() as conn:
-                    tag_rows = conn.execute(
-                        "SELECT DISTINCT media_id FROM tags WHERE name LIKE ? LIMIT ?",
-                        (like, needed * 3),
-                    ).fetchall()
-                tag_ids = [tr["media_id"] for tr in tag_rows if tr["media_id"] not in seen_ids]
-                for rec in _get_light_records_by_ids(tag_ids):
-                    if not _passes_filters(rec):
-                        continue
-                    _resolve_record(rec)
-                    enriched.append(rec)
-                    seen_ids.add(rec["id"])
-                    if len(enriched) >= needed:
-                        break
+        # Stable, offset-independent ordering: semantic hits by score desc, then
+        # lexical hits in id order, de-duplicated. Capped at SEARCH_CAP.
+        sem_ids = list(semantic.keys())
+        sem_ids.sort(key=lambda mid: semantic[mid]["score"], reverse=True)
+        seen_sem = set(sem_ids)
+        lex_filtered = [mid for mid in lexical_ids if mid not in seen_sem]
+        ordered_ids = (sem_ids + lex_filtered)[:SEARCH_CAP]
 
-        # audit M19: slice the requested page; total = bounded match count (the
-        # same "items seen so far" semantic for both search sub-paths).
-        items = enriched[offset:offset + limit]
-        # audit H15: one bulk tag query for the returned page only
+        # One bulk fetch of the candidate light records (bounded by SEARCH_CAP),
+        # apply the filters the SQL path can't (semantic hits carry no rating/
+        # lang), then slice the requested page. Tags fetched once for the page.
+        records_by_id: dict = {}
+        for rec in _get_light_records_by_ids(ordered_ids):
+            if not _passes_filters(rec):
+                continue
+            _resolve_record(rec)
+            mid = rec["id"]
+            if mid in semantic:
+                rec["score"] = semantic[mid]["score"]
+                rec["excerpt"] = semantic[mid]["excerpt"]
+                rec["match_type"] = "semantic"
+            else:
+                rec["score"] = None
+                rec["excerpt"] = (rec.get("transcript") or "")[:300] or rec.get("filename") or ""
+                rec["match_type"] = "text"
+            records_by_id[mid] = rec
+        ordered = [records_by_id[mid] for mid in ordered_ids if mid in records_by_id]
+        total = len(ordered)
+        items = ordered[offset:offset + limit]
         tags_by_id = _get_tags_bulk([rec["id"] for rec in items])
         for rec in items:
             rec["tags"] = tags_by_id.get(rec["id"], [])
-        resp = {"items": items, "total": len(enriched), "search": True}
+        resp = {"items": items, "total": total, "search": True}
         if search_warning:
             resp["search_degraded"] = True
             resp["warning"] = search_warning
@@ -474,11 +473,13 @@ def get_media_detail(
             rec["frame_tags_parsed"] = json.loads(rec["frame_tags"])
         except Exception:
             rec["frame_tags_parsed"] = []
-    # User-facing tags: screen quality-defect noise + keep only the top-N most
-    # confident (focus-weighted) tags, so a clip doesn't dump 10+ tags on the user.
-    top = set(tag_quality.rank_media_tags(rec.get("frame_tags_parsed") or []))
+    # User-facing tags: show BOTH manual (user-added) and auto (vision) tags.
+    # Only normalize/dedup via filter_tag_records (Simplified↔Traditional +
+    # variant-char collapse + noise-artifact drop) — do NOT cap auto tags by the
+    # top-N frame ranking, or manual tags (which never appear in that set) get
+    # silently dropped from the inspector (regression: manual tags vanished).
     all_tags = tag_quality.filter_tag_records(db.get_tags(media_id))
-    rec["tags"] = [t for t in all_tags if t["name"] in top] if top else all_tags
+    rec["tags"] = all_tags
     # Optional LLM-canonicalized tag list (populated by `ingest.py --canonicalize-tags`).
     # Returned alongside raw tags so the UI can toggle raw ↔ canonical; null until run.
     if rec.get("canonical_tags"):
@@ -1125,3 +1126,89 @@ def retry_vision_status(
     """
     rec = vision_jobs.get(media_id)
     return rec if rec is not None else {"state": "idle"}
+
+
+# ── Unified delete (Phase 14.5) ───────────────────────────────────────────────
+
+class BulkDeleteBody(BaseModel):
+    ids: list
+    allow_file_delete: bool = True
+
+
+@router.delete("/api/media/{media_id}")
+def delete_media(
+    media_id: int,
+    allow_file_delete: bool = True,
+    _tok: dict = Depends(require_scopes("media_delete")),
+):
+    """Delete one media record + all its artefacts. The original source file is
+    moved to the recycle bin (.arkiv/trash), not unlinked; files outside
+    PROJECT_ROOT are metadata-only (see media_delete.delete_media_full)."""
+    result = media_delete.delete_media_full(
+        media_id, allow_file_delete=allow_file_delete, token_info=_tok
+    )
+    if result is None:
+        raise HTTPException(404, "找不到該媒體")
+    return result
+
+
+@router.post("/api/media/bulk-delete")
+def bulk_delete_media(
+    body: BulkDeleteBody,
+    _tok: dict = Depends(require_scopes("media_delete")),
+):
+    """Delete several media records at once. Returns the ids that were deleted,
+    skipped (e.g. not found), and any hard errors — matching the designed
+    {deleted, skipped, errors} contract."""
+    deleted, skipped, errors = [], [], []
+    for mid in body.ids:
+        try:
+            mid = int(mid)
+        except (TypeError, ValueError):
+            errors.append({"media_id": mid, "error": "bad id"})
+            continue
+        r = media_delete.delete_media_full(
+            mid, allow_file_delete=body.allow_file_delete, token_info=_tok
+        )
+        if r is None:
+            skipped.append(mid)
+        else:
+            deleted.append(mid)
+    return {"ok": True, "deleted": deleted, "skipped": skipped, "errors": errors}
+
+
+class PruneMissingBody(BaseModel):
+    dry_run: bool = True
+
+
+@router.post("/api/media/prune-missing")
+def prune_missing_media(
+    body: PruneMissingBody,
+    _tok: dict = Depends(require_scopes("media_delete")),
+):
+    """Remove media rows whose source file no longer exists on disk (the ghost
+    records left by manually-deleted files). With dry_run=true (default) nothing
+    is changed — only a count is returned. Moved out of routers/admin.py: a media
+    data-integrity operation (delete_media_full over ghost rows), not a token
+    /admin one (R5-25 route ownership)."""
+    missing = db.iter_missing()
+    if body.dry_run:
+        return {
+            "scanned": len(missing),
+            "pruned": 0,
+            "pruned_ids": [],
+            "dry_run": True,
+        }
+    pruned_ids = []
+    for m in missing:
+        r = media_delete.delete_media_full(
+            m["id"], allow_file_delete=False, token_info=_tok
+        )
+        if r is not None:
+            pruned_ids.append(m["id"])
+    return {
+        "scanned": len(missing),
+        "pruned": len(pruned_ids),
+        "pruned_ids": pruned_ids,
+        "dry_run": False,
+    }
