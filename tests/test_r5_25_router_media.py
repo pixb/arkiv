@@ -26,6 +26,7 @@ _EXPECTED_ROUTES = {
     ("/api/media/{media_id}", "GET"),
     ("/api/media/{media_id}", "DELETE"),
     ("/api/media/bulk-delete", "POST"),
+    ("/api/media/prune-missing", "POST"),
     ("/api/media/{media_id}/waveform", "GET"),
     ("/api/media/{media_id}/scenes", "GET"),
     ("/api/media/{media_id}/segments", "GET"),
@@ -52,7 +53,7 @@ def test_media_router_is_a_leaf_module():
     assert not re.search(r"^\s*from\s+server\b", src, re.M)
 
 
-def test_router_owns_exactly_the_22_media_routes():
+def test_router_owns_all_the_media_routes():
     import routers.media as rm
     pairs = {
         (r.path, m)

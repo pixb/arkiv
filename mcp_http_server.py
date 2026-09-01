@@ -33,22 +33,23 @@ from fastapi import HTTPException
 import auth
 import mcp_server
 
-BIND = os.getenv("ARKIV_MCP_BIND", "0.0.0.0")
+BIND = os.getenv("ARKIV_MCP_BIND", "127.0.0.1")
 PORT = int(os.getenv("ARKIV_MCP_PORT", "8502"))
 
 
 def _extract_token(scope):
-    """Pull a raw token from the Authorization header or ?token= query param."""
+    """Pull a raw bearer token from the Authorization header only.
+
+    No `?token=` query param: a token in a URL persists in uvicorn access logs,
+    any reverse proxy in front of it, and browser history — three places that
+    outlive the request and are not scrubbed. Clients that can't set a header
+    should do so on their side instead."""
     for name, value in scope.get("headers", []):
         if name == b"authorization":
             raw = value.decode("latin-1", "replace")
             if raw.lower().startswith("bearer "):
                 return raw[7:].strip()
             return raw.strip()
-    qs = scope.get("query_string", b"").decode("latin-1", "replace")
-    for pair in qs.split("&"):
-        if pair.startswith("token="):
-            return pair[len("token="):]
     return ""
 
 

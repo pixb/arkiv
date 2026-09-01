@@ -714,7 +714,6 @@
   .previmg { width: 100%; height: 100%; object-fit: cover; display: block; }
   /* the real player: contain (don't crop footage) on black; audio sits at the bottom */
   video.previmg { object-fit: contain; background: #000; }
-  .prevaudio { position: absolute; left: 12px; right: 12px; bottom: 12px; width: auto; }
   /* Custom audio player: a themed, clearly-visible play control instead of the
      browser's native white <audio> bar (which read as a blank "white box" in the
      dark preview and isn't rendered at all in some WebViews). */

@@ -826,6 +826,7 @@ def process_file(path: Path, skip_vision: bool, existing: Optional[Dict] = None,
                 "fps": None,
                 "has_audio": 0,
                 "start_tc": None,
+                "codec": None,
             }
         else:
             print(" [ffprobe failed]")
@@ -2105,12 +2106,7 @@ def main():
     parser.add_argument("--status", action="store_true", help="Phase 11.5e: print resource + queue status (--json for machine-readable)")
     parser.add_argument("--json", action="store_true", help="With --status: emit JSON instead of human-readable")
     parser.add_argument("--retraditionalize", action="store_true", help="Phase 9.8b backfill: retro-convert existing SIMPLIFIED zh transcripts (transcript + segments + words + the per-language archive) to Taiwan Traditional (s2twp), so the pre-9.8b backlog stops missing a 記憶體 query on a 內存 clip. GATED: only genuine Simplified rows convert; already-Traditional / mixed rows are skipped (never fed to the phrase layer, so never corrupted). Idempotent, timing-safe. Follow with `embed.py --rebuild`. No --dir / re-transcribe needed.")
-    parser.add_argument("--dry-run", action="store_true", help="With --retraditionalize / --prune-missing: report what would change without writing.")
-    parser.add_argument(
-        "--prune-missing",
-        action="store_true",
-        help="Phase 14.5: 删除源文件已不存在的断链媒体记录（含向量/缩略图/proxy/波形）。配合 --dry-run 只统计不删。",
-    )
+    parser.add_argument("--dry-run", action="store_true", help="With --retraditionalize: report what would convert without writing.")
     args = parser.parse_args()
 
     # brick 4: apply the per-run whisper preset + language override before any
@@ -2137,7 +2133,7 @@ def main():
         or args.canonicalize_tags
         or args.propose_aliases or args.apply_aliases
         or args.propose_collections or args.apply_collections
-        or args.retraditionalize or args.prune_missing
+        or args.retraditionalize
         or bool(args.queue) or args.status
     )
     if not maintenance_mode and not args.dir and not args.files:
@@ -2155,7 +2151,7 @@ def main():
 
     # Phase 8.0e: pre-flight storage check before any pipeline work.
     # Skip for maintenance modes (they're the tools that fix broken state).
-    if not (args.migrate_relative or args.regenerate_proxies or args.regenerate_thumbnails or args.queue or args.status or args.canonicalize_tags or args.propose_aliases or args.apply_aliases or args.propose_collections or args.apply_collections or args.retraditionalize or args.prune_missing):
+    if not (args.migrate_relative or args.regenerate_proxies or args.regenerate_thumbnails or args.queue or args.status or args.canonicalize_tags or args.propose_aliases or args.apply_aliases or args.propose_collections or args.apply_collections or args.retraditionalize):
         import health
         ok_pf, errors_pf = health.preflight_paths()
         if not ok_pf:
@@ -2166,22 +2162,6 @@ def main():
             sys.exit(4)
 
     db.init_db()
-
-    if args.prune_missing:
-        import media_delete
-        missing = db.iter_missing()
-        if args.dry_run:
-            print("[prune-missing] dry-run: {0} ghost record(s) would be removed.".format(len(missing)))
-            for m in missing:
-                print("  - id={0} {1}".format(m["id"], m["filename"]))
-            return
-        pruned = 0
-        for m in missing:
-            r = media_delete.delete_media_full(m["id"], allow_file_delete=False, token_info=None)
-            if r is not None:
-                pruned += 1
-        print("[prune-missing] removed {0}/{1} ghost record(s).".format(pruned, len(missing)))
-        return
 
     if args.queue:
         _run_queue_cmd(args)

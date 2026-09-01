@@ -14,7 +14,6 @@ from pydantic import BaseModel
 import admin
 import config
 import db
-import media_delete
 from auth import require_scopes
 
 router = APIRouter()
@@ -73,41 +72,7 @@ def admin_revoke_token(
     return {"ok": True, "deleted": token_id}
 
 
-# ── Orphan reconcile + recycle bin (Phase 14.5) ───────────────────────────────
-
-class PruneMissingBody(BaseModel):
-    dry_run: bool = True
-
-
-@router.post("/api/admin/prune-missing")
-def admin_prune_missing(
-    body: PruneMissingBody,
-    _tok: dict = Depends(require_scopes("media_delete")),
-):
-    """Remove media rows whose source file no longer exists on disk (the ghost
-    records left by manually-deleted files). With dry_run=true (default) nothing
-    is changed — only a count is returned."""
-    missing = db.iter_missing()
-    if body.dry_run:
-        return {
-            "scanned": len(missing),
-            "pruned": 0,
-            "pruned_ids": [],
-            "dry_run": True,
-        }
-    pruned_ids = []
-    for m in missing:
-        r = media_delete.delete_media_full(
-            m["id"], allow_file_delete=False, token_info=_tok
-        )
-        if r is not None:
-            pruned_ids.append(m["id"])
-    return {
-        "scanned": len(missing),
-        "pruned": len(pruned_ids),
-        "pruned_ids": pruned_ids,
-        "dry_run": False,
-    }
+# ── Recycle bin (Phase 14.5) ──────────────────────────────────────────────────
 
 
 @router.get("/api/admin/trash")
