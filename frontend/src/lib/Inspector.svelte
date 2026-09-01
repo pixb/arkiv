@@ -24,7 +24,8 @@
   // IN/OUT marks snap to exact frame boundaries and frame stepping is enabled.
   // null → the old second-based behaviour (audio, or fps unknown) is unchanged.
   export let fps = null
-  $: useVideo = !!videoSrc && !is360 && !!media && media.kind !== 'audio'
+  $: useImage = !!videoSrc && !!media && media.kind === 'image'
+  $: useVideo = !!videoSrc && !is360 && !!media && media.kind !== 'audio' && media.kind !== 'image'
   $: useAudio = !!videoSrc && !!media && media.kind === 'audio'
   // Frame features only make sense for a video with a known, sane fps.
   $: frameExact = useVideo && typeof fps === 'number' && fps > 0
@@ -226,6 +227,9 @@
   export let onChapters = null
   export let onRemotion = null
   export let onReveal = null
+  // Live delete. onDelete = () => void; when set, a "刪除素材" button appears. The
+  // parent owns the confirm dialog + the API call (so it can also drive bulk delete).
+  export let onDelete = null
   // Live tag editing. tags = [{id,name,source}] → renders the editable Tags block;
   // null → no block (mock screens unchanged). onAddTag/onRemoveTag wire the writes.
   export let tags = null
@@ -346,7 +350,7 @@
 <aside class="inspector">
   <div class="header">
     <Eyebrow style="margin-bottom:8px;">
-      Inspector · {media.kind === 'audio' ? 'AUDIO' : `${media.fps}p · ${media.res}`}
+      Inspector · {media.kind === 'image' ? 'IMAGE' : media.kind === 'audio' ? 'AUDIO' : `${media.fps}p · ${media.res}`}
     </Eyebrow>
     <div class="fname">{media.name}</div>
     <Mono dim style="font-size:10.5px;margin-top:4px;letter-spacing:0.04em;">
@@ -354,9 +358,11 @@
     </Mono>
   </div>
 
-  <div class="preview" class:hasplayer={useVideo || useAudio}>
+  <div class="preview" class:hasplayer={useVideo || useAudio || useImage}>
     {#if is360 && thumbUrl && !imgFailed}
       {#if Pano360}<svelte:component this={Pano360} src={thumbUrl} />{:else}<div class="panoload"><Mono dim style="font-size:11px;">360 · loading…</Mono></div>{/if}
+    {:else if useImage}
+      <img class="previmg" src={videoSrc} alt={media.name} on:error={() => (imgFailed = true)} />
     {:else if useVideo}
       <!-- svelte-ignore a11y-media-has-caption -->
       <video bind:this={playerEl} on:timeupdate={onTimeUpdate} on:loadedmetadata={onLoadedMeta} class="previmg" controls playsinline preload="metadata" poster={thumbUrl || undefined} src={videoSrc}></video>
@@ -370,7 +376,7 @@
     {:else}
       <Thumb seed={media.id} kind={media.kind} {theme} />
     {/if}
-    {#if !useVideo && !useAudio && !live}
+    {#if !useVideo && !useAudio && !useImage && !live}
       <!-- design-mock only: fake scrubber overlay. In live (no player available)
            the poster shows alone — no faked playback chrome. -->
       <div class="scrim"></div>
@@ -620,6 +626,9 @@
     {#if onReveal}
       <button class="ak-btn reveal" on:click={onReveal} title="在 Finder / 檔案總管中顯示原始檔">⊙ 在 Finder 顯示</button>
     {/if}
+    {#if onDelete}
+      <button class="ak-btn del" on:click={onDelete} title="刪除素材（移至回收桶，可還原）">刪除素材</button>
+    {/if}
   </div>
 </aside>
 
@@ -642,6 +651,8 @@
     border-bottom: 1px solid var(--rule);
   }
   .reveal { font-size: 11px; padding: 4px 10px; margin-top: 8px; width: 100%; }
+  .del { font-size: 11px; padding: 4px 10px; margin-top: 8px; width: 100%; color: #d9534f; border-color: #d9534f; }
+  .del:hover { background: #d9534f; color: #fff; }
   /* ancillary export disclosure (成品輔助) — visually secondary to the primary row */
   .moreexp { display: inline-block; margin-top: 8px; font-size: 10.5px; color: var(--quiet); cursor: pointer; }
   .moreexp:hover { color: var(--ink); }

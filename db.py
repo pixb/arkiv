@@ -130,6 +130,22 @@ def dedup_path_variants(path: str) -> List[str]:
     return variants
 
 
+def path_is_indexed(rel_or_abs_path: str) -> bool:
+    """True if a media row already references this path (in any of the stored
+    abs/rel/backslash forms). Used by the upload path to avoid overwriting an
+    already-ingested file: a same-name re-upload must be renamed, not clobber
+    the original on disk AND then get SKIPped by ingest (which would lose both)."""
+    variants = dedup_path_variants(str(rel_or_abs_path))
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT 1 FROM media WHERE path IN ({0}) LIMIT 1".format(
+                ",".join("?" * len(variants))
+            ),
+            variants,
+        ).fetchone()
+    return rows is not None
+
+
 def canonical_stored_path(stored: str) -> str:
     """Canonicalise a STORED path value to forward-slash relative. to_relative alone
     can't convert a backslash-relative path ('media\\clip.mp4' is neither absolute
@@ -506,6 +522,21 @@ def init_db():
                 value      TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(scope, key)
+            )
+        """)
+        # Phase 14.5: recycle bin for deleted media originals. The source file is
+        # moved here (not unlinked) so a mistaken delete is recoverable until it
+        # expires (see media_delete.purge_trash). metadata-only deletes (external
+        # paths) also record a row with trash_path = '' so the event is auditable.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trash (
+                id            INTEGER PRIMARY KEY,
+                media_id      INTEGER,
+                filename      TEXT,
+                original_path TEXT,
+                trash_path    TEXT,
+                deleted_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at    TEXT
             )
         """)
         # ── library provenance ─────────────────────────────────────────────
@@ -1361,6 +1392,115 @@ def delete_media(media_id: int, _conn=None):
         return _do(conn)
 
 
+# ── Trash (recycle bin) + orphan reconcile (Phase 14.5) ───────────────────────
+
+def trash_media(media_id: int, filename: str, original_path: str, trash_path: str,
+                ttl_days: int = 30) -> None:
+    """Record a deleted media's original in the recycle bin. `trash_path` is the
+    path it was moved to, or '' when only metadata was removed (external path)."""
+    import datetime as _dt
+    deleted_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    expires_at = (
+        _dt.datetime.now(_dt.timezone.utc)
+        + _dt.timedelta(days=ttl_days)
+    ).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO trash (media_id, filename, original_path, trash_path, "
+            "deleted_at, expires_at) VALUES (?,?,?,?,?,?)",
+            (media_id, filename, original_path, trash_path, deleted_at, expires_at),
+        )
+
+
+def list_trash() -> list:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, media_id, filename, original_path, trash_path, "
+            "deleted_at, expires_at FROM trash ORDER BY deleted_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def purge_trash(ttl_days: int = 30) -> int:
+    """Delete trash entries older than `ttl_days` AND remove the moved file on
+    disk. Returns the number of purged entries."""
+    import datetime as _dt
+    import os as _os
+    import shutil as _shutil
+    cutoff = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=ttl_days)).isoformat()
+    purged = 0
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, trash_path FROM trash WHERE deleted_at <= ? AND trash_path <> ''",
+            (cutoff,),
+        ).fetchall()
+        for r in rows:
+            tp = r["trash_path"]
+            try:
+                if _os.path.exists(tp):
+                    if _os.path.isdir(tp):
+                        _shutil.rmtree(tp, ignore_errors=True)
+                    else:
+                        _os.remove(tp)
+            except OSError:
+                pass
+            conn.execute("DELETE FROM trash WHERE id=?", (r["id"],))
+            purged += 1
+    return purged
+
+
+def iter_missing() -> list:
+    """Return media rows whose resolved source file no longer exists on disk
+    (the 'ghost' records left by manually-deleted files). Each item is a dict
+    with at least id/path/filename so the caller can reconcile them."""
+    out = []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, path, filename FROM media"
+        ).fetchall()
+    for r in rows:
+        p = r["path"]
+        if not p:
+            continue
+        try:
+            resolved = resolve_path(p)
+        except ValueError:
+            continue
+        if not Path(resolved).exists():
+            out.append({"id": r["id"], "path": p, "filename": r["filename"]})
+    return out
+
+
+def restore_trash(trash_id: int) -> str:
+    """Move a trashed original back next to its original path (or media-in if the
+    parent is gone). Returns the destination path so the caller can re-ingest."""
+    import shutil as _shutil
+    from pathlib import Path as _Path
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, media_id, filename, original_path, trash_path FROM trash WHERE id=?",
+            (trash_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("no such trash entry: %s" % trash_id)
+        src = row["trash_path"]
+        if not src or not Path(src).exists():
+            raise ValueError("trashed file missing: %s" % src)
+        dest_dir = Path(row["original_path"]).parent
+        if not dest_dir.exists():
+            dest_dir = PROJECT_ROOT / "media-in"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / row["filename"]
+        # don't clobber an existing file with the same name
+        if dest.exists():
+            from datetime import datetime as _dt
+            stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+            dest = dest_dir / ("%s__%s" % (stamp, row["filename"]))
+        _shutil.move(str(src), str(dest))
+        conn.execute("DELETE FROM trash WHERE id=?", (trash_id,))
+        return str(dest)
+
+
 # ── Enhanced Queries (Phase 4 UI) ─────────────────────────────────────────────
 
 # `media.creation_date` is the SHOOT date and it is stored raw, in whatever shape
@@ -1511,6 +1651,8 @@ def _build_filter_clause(
         clauses.append("ext IN " + mediatypes.sql_in_literal(mediatypes.VIDEO_EXT))
     elif media_type == "audio":
         clauses.append("ext IN " + mediatypes.sql_in_literal(mediatypes.AUDIO_EXT))
+    elif media_type == "image":
+        clauses.append("ext IN " + mediatypes.sql_in_literal(mediatypes.IMAGE_EXT))
     shot_sql, shot_params = shot_window_clause(shot_year=shot_year, shot_date=shot_date)
     if shot_sql:
         clauses.append(shot_sql)
