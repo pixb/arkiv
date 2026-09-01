@@ -26,6 +26,9 @@ from pathlib import Path
 import config
 import db
 
+import bins as bins_store
+import projects as project_registry
+
 
 def _within_allowed_roots(resolved: str) -> bool:
     """True if `resolved` lives under PROJECT_ROOT or one of ARKIV_MEDIA_ROOTS.
@@ -142,6 +145,19 @@ def delete_media_full(media_id, allow_file_delete=True, token_info=None):
         col = vectordb.get_collection()
         if col is not None:
             vectordb.delete_media(col, media_id)
+    except Exception:
+        pass
+
+    # curated bins (精選集): drop the now-deleted clip so a bin's count reflects
+    # only clips that still exist. Best-effort — deletion itself already succeeded.
+    try:
+        root_key = str(config.PROJECT_ROOT.expanduser().resolve(strict=False)).casefold()
+        project_name = None
+        for p in project_registry.discover_projects():
+            if p.key() == root_key:
+                project_name = p.name
+                break
+        bins_store.remove_media_from_all_bins(project_name, media_id)
     except Exception:
         pass
 
