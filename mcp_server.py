@@ -26,12 +26,18 @@ from typing import Any, Dict, List, Optional
 import db
 import scenes
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pathres import _display_path
 
 # Logging goes to stderr (never stdout — stdout is the MCP stdio channel).
 LOGGER = logging.getLogger(__name__)
 
-mcp = FastMCP("arkiv")
+mcp = FastMCP(
+    "arkiv",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
+)
 
 
 # ── readiness ───────────────────────────────────────────────────────────────

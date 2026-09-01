@@ -141,6 +141,36 @@ automation, or let Claude/OpenClaw query your library.
 
 → **[API auth, token scopes, and the library Chat (RAG) endpoint: docs/api.md](docs/api.md)**
 
+### Exposing MCP to LAN
+
+The MCP server binds to `127.0.0.1` by default (loopback-only). To expose it to your LAN:
+
+1. **Set the bind address** in `docker-compose.yml`:
+   ```yaml
+   arkiv-mcp:
+     environment:
+       - ARKIV_MCP_BIND=0.0.0.0  # Listen on all interfaces
+   ```
+
+2. **Uncomment the ports mapping**:
+   ```yaml
+   arkiv-mcp:
+     ports:
+       - "8502:8502"
+   ```
+
+3. **Restart the service**:
+   ```bash
+   docker compose up -d arkiv-mcp
+   ```
+
+4. **Configure your MCP client** (e.g., Claude Desktop) to connect to `http://<your-server-ip>:8502`.
+
+**Security notes:**
+- The MCP server is **read-only** — no ingest/delete operations are exposed.
+- Use a **VPN or firewall** to restrict access; never expose to the public internet.
+- All requests require a valid arkiv token via `Authorization: Bearer <token>` header.
+
 ## Quick Start
 
 ### Download the app (macOS Apple Silicon · Windows x64)
