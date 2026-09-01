@@ -13,13 +13,18 @@ no cycle.
 import asyncio
 import json
 import os
-from pathlib import Path
-from typing import Optional
+import time
+from datetime import datetime
+from pathlib import Path, PurePosixPath
+from typing import List, Optional
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
+    File,
     HTTPException,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -71,7 +76,8 @@ class ScanRequest(BaseModel):
 MEDIA_EXTS = mediatypes.MEDIA_EXT
 VIDEO_EXTS = mediatypes.VIDEO_EXT
 AUDIO_EXTS = mediatypes.AUDIO_EXT
-assert VIDEO_EXTS | AUDIO_EXTS == MEDIA_EXTS  # the two must partition MEDIA_EXTS
+IMAGE_EXTS = mediatypes.IMAGE_EXT
+assert VIDEO_EXTS | AUDIO_EXTS | IMAGE_EXTS == MEDIA_EXTS  # the three must partition MEDIA_EXTS
 # camera raw / stills the ingest pipeline does not process — surfaced in the scan
 # manifest as "skipped" so the redesign's setup dialog (op-01) can show what will
 # not be ingested (e.g. a card of .mov clips + .crw stills).
@@ -88,6 +94,7 @@ def _build_scan_manifest(files: list, unsupp: dict) -> dict:
     return {
         "video": cat(VIDEO_EXTS),
         "audio": cat(AUDIO_EXTS),
+        "image": cat(IMAGE_EXTS),
         "unsupported": {"count": sum(unsupp.values()), "by_ext": dict(sorted(unsupp.items()))},
         "total_size_mb": round(sum(f["size_mb"] for f in files), 1),
     }
@@ -261,6 +268,147 @@ def reingest_media(
         raise HTTPException(500, str(e))
     finally:
         _release_ingest_slot()
+
+
+# ── Upload (HTTP multipart → media-in → auto ingest) ──────────────────────────
+# Phase 14 addendum: let MCP clients / browsers push media without manually
+# copying into the bind mount. Files land in the ingest source (media-in) and a
+# background ingest picks them up. Filenames are constrained to a basename (no
+# path traversal) and only known media extensions are accepted.
+
+_UPLOAD_DIR = (
+    Path(os.environ.get("ARKIV_UPLOAD_DIR", "")).expanduser()
+    if os.environ.get("ARKIV_UPLOAD_DIR")
+    else (config.PROJECT_ROOT / "media-in")
+)
+_UPLOAD_MAX_BYTES = int(os.environ.get("ARKIV_UPLOAD_MAX_MB", "4096")) * 1024 * 1024
+# Phase 14 addendum: cap concurrent upload handlers so a burst of large files
+# can't exhaust the worker pool / saturate disk. Waiters queue up to
+# _UPLOAD_SEM_TIMEOUT seconds for a slot, then get 429. (Background ingest is
+# already single-flight via the shared slot in state.py.)
+_UPLOAD_MAX_CONCURRENT = max(1, int(os.environ.get("ARKIV_UPLOAD_MAX_CONCURRENT", "3")))
+_UPLOAD_SEM_TIMEOUT = float(os.environ.get("ARKIV_UPLOAD_MAX_QUEUE_SEC", "300"))
+_upload_sem = asyncio.Semaphore(_UPLOAD_MAX_CONCURRENT)
+
+
+def _safe_upload_dir() -> Path:
+    d = _UPLOAD_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _save_upload_file(uf: UploadFile, dest: Path, max_bytes: int) -> None:
+    """Blocking: stream one UploadFile to dest, enforcing the per-file size cap.
+    Runs inside asyncio.to_thread so it never pins the event loop."""
+    written = 0
+    with dest.open("wb") as out:
+        while True:
+            chunk = uf.file.read(1024 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                out.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(
+                    413,
+                    f"檔案超過上傳上限（{max_bytes // (1024 * 1024)} MB）：{getattr(uf, 'filename', '?')}",
+                )
+            out.write(chunk)
+
+
+@router.post("/api/ingest/upload")
+async def ingest_upload(
+    files: List[UploadFile] = File(...),
+    background_tasks: BackgroundTasks = None,
+    _tok: dict = Depends(require_scopes("ingest_write")),
+):
+    """Accept multipart media uploads and store them under the ingest source
+    (media-in). A background ingest of that directory is triggered so the new
+    clips become searchable. Concurrency is capped by _upload_sem so a burst of
+    large uploads can't exhaust workers/disk; filename is constrained to a
+    basename (no path traversal) and only known media extensions are accepted."""
+    acquired = False
+    try:
+        await asyncio.wait_for(_upload_sem.acquire(), timeout=_UPLOAD_SEM_TIMEOUT)
+        acquired = True
+    except asyncio.TimeoutError:
+        raise HTTPException(429, "上傳並發已達上限，請稍後再試")
+    try:
+        upload_dir = await asyncio.to_thread(_safe_upload_dir)
+        saved = []
+        renamed = []
+        for uf in files:
+            raw = uf.filename or ""
+            name = PurePosixPath(raw).name
+            if not name or name in (".", "..") or "/" in name or "\\" in name:
+                raise HTTPException(400, f"非法檔名：{raw}")
+            ext = Path(name).suffix.lower()
+            if ext not in MEDIA_EXTS:
+                raise HTTPException(400, f"不支援的檔案類型：{ext}（僅允許媒體格式）")
+            # Collision-safe name: never overwrite an existing file on disk, nor a
+            # media row already indexed at this path. A same-name re-upload is
+            # renamed (<stem>__<YYYYMMDD-HHMMSS><ext>) so both clips survive instead
+            # of the original being clobbered + then SKIPped by ingest (data loss).
+            stem = Path(name).stem
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            cand = name
+            n = 0
+            while True:
+                c = upload_dir / cand
+                if not c.exists() and not db.path_is_indexed(str(c)):
+                    break
+                n += 1
+                cand = "{0}__{1}{2}{3}".format(
+                    stem, ts, ("_" + str(n)) if n > 1 else "", ext
+                )
+            dest = upload_dir / cand
+            # basename guarantees containment, but assert defensively
+            if dest.resolve() != (upload_dir.resolve() / cand):
+                raise HTTPException(400, f"非法路徑：{raw}")
+            await asyncio.to_thread(_save_upload_file, uf, dest, _UPLOAD_MAX_BYTES)
+            saved.append(cand)
+            if cand != name:
+                renamed.append({"from": name, "to": cand})
+        if not saved:
+            raise HTTPException(400, "沒有收到任何檔案")
+        if background_tasks is not None:
+            background_tasks.add_task(_bg_ingest, str(upload_dir))
+        return JSONResponse(
+            status_code=202,
+            content={
+                "ok": True,
+                "saved": saved,
+                "renamed": renamed,
+                "upload_dir": str(upload_dir),
+                "ingest": "triggered" if background_tasks is not None else "skipped",
+            },
+        )
+    finally:
+        if acquired:
+            _upload_sem.release()
+
+
+def _bg_ingest(dir_path: str) -> None:
+    """Run ingest.py over the upload directory in the background, serialised
+    through the shared single-flight slot (audit H3 — no concurrent whisper)."""
+    import subprocess, sys, proctree
+
+    deadline = time.time() + 1800
+    while time.time() < deadline:
+        if _acquire_ingest_slot():
+            try:
+                proctree.run_tree(
+                    [sys.executable, str(BASE_DIR / "ingest.py"), "--dir", dir_path],
+                    timeout=1800,
+                    cwd=str(BASE_DIR),
+                )
+            except Exception:
+                pass
+            finally:
+                _release_ingest_slot()
+            return
+        time.sleep(5)
 
 
 # ── WebSocket: Ingest Progress ───────────────────────────────────────────
