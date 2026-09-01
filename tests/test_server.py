@@ -1048,13 +1048,16 @@ def test_stream_returns_409_when_hevc_source_has_no_proxy(
     resp = fastapi_client.get("/api/stream/1")
     assert resp.status_code == 409
     body = resp.json()
-    assert body == {
-        "need_proxy": True,
-        "media_id": 1,
-        "filename": "iphone_clip.mov",
-        "reason": "browser-incompatible codec (HEVC/ProRes); proxy required for playback",
-        "hint": "POST /api/proxy/build to queue proxy generation",
-    }
+    # Static shape — the reason/hint bodies are dynamic (formatted with the
+    # probed codec + media_id, see routers/misc.py:stream_media), so match the
+    # stable parts and substring-check the formatted ones.
+    assert body["need_proxy"] is True
+    assert body["media_id"] == 1
+    assert body["filename"] == "iphone_clip.mov"
+    assert "hevc" in body["reason"]
+    assert "proxy required" in body["reason"]
+    assert "POST /api/proxy/build/1" in body["hint"]
+    assert "queue proxy generation" in body["hint"]
 
 
 def test_stream_serves_h264_source_unchanged_when_proxy_check_says_no(
