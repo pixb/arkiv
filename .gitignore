@@ -86,3 +86,6 @@ OVERNIGHT_UI_BUILD.md
 .testdata/
 frontend/vite.config.tailnet.js
 frontend/vite.config.dev8502.js
+
+# Settings overrides per-install — never commit local state.
+settings.local.json
