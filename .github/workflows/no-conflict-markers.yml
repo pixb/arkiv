@@ -1,0 +1,52 @@
+name: no-conflict-markers
+
+# Fails the build if any tracked text file on `next` (PR or push) contains
+# an unresolved git merge marker. Catches the class of bug that put two
+# bare `<<<<<<< HEAD` lines into docker-compose.yml (commit 33b28ea) —
+# `git merge` always produces matched triplets, so a marker without its
+# `=======` / `>>>>>>>` siblings is a smoking gun for a half-cleaned
+# editor session, never a legitimate state.
+
+on:
+  push:
+    branches: [next]
+  pull_request:
+    branches: [next]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for unresolved git conflict markers
+        run: |
+          set -euo pipefail
+          # git grep -n prints "path:lineno:line" for every hit.
+          # -I: skip binary files. -E: extended regex.
+          # The pattern requires the marker to be EXACTLY 7 chars (plus
+          # an optional trailing space-and-label, or end-of-line).
+          # Without the ( |$) tail, an 80-char "=====" separator in
+          # LICENSE would match (it starts with 7 "="), and pytest's
+          # `============================= test session starts ==============================`
+          # banner in any captured-output doc would too.
+          if git grep -nIE '^(<{7}|={7}|>{7})( |$)' \
+              -- ':!*.lock' \
+                 ':!package-lock.json' \
+                 ':!yarn.lock' \
+                 ':!pnpm-lock.yaml' \
+                 ':!poetry.lock' \
+                 ':!Cargo.lock' \
+                 ':!*.svg' \
+                 ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.webp' ':!*.ico' \
+                 ':!*.mp4' ':!*.mov' ':!*.webm' ':!*.mkv' \
+                 ':!*.pyc' ':!*.wasm' \
+                 ':(exclude).git/' \
+                 ':(exclude)node_modules/'; then
+            echo "::error::Unresolved git conflict markers found in the files above."
+            echo "::error::Resolve the conflict (git add <file>) and re-commit — do NOT commit raw <<<<<<< markers."
+            exit 1
+          fi
+          echo "No conflict markers found."

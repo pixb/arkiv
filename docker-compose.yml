@@ -9,7 +9,6 @@ services:
       - ./media.db:/app/media.db
       - ./chroma_db:/app/chroma_db
       - ./thumbnails:/app/thumbnails
-<<<<<<< HEAD
       # Cross-library 精選集 (bins.py) persistence. Default storage is
       # ~/.arkiv-bins.json (=/root/.arkiv-bins.json inside the container),
       # which lives in the container's ephemeral layer — without this bind mount,
@@ -54,7 +53,6 @@ services:
       # caller full admin with no token. Keep bridge + port mapping.
       - ARKIV_HOST=0.0.0.0
       - ARKIV_PORT=8501
-<<<<<<< HEAD
       # See the ./arkiv_data/bins volume mount above; keep the path in sync.
       - ARKIV_BINS_PATH=/root/.arkiv-bins/bins.json
       # See the ./arkiv_data/projects volume mount above; keep the path in sync.
