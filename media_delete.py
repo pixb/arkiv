@@ -29,7 +29,6 @@ import db
 import bins as bins_store
 import projects as project_registry
 
-
 def _within_allowed_roots(resolved: str) -> bool:
     """True if `resolved` lives under PROJECT_ROOT or one of ARKIV_MEDIA_ROOTS.
 
@@ -160,7 +159,6 @@ def delete_media_full(media_id, allow_file_delete=True, token_info=None):
         bins_store.remove_media_from_all_bins(project_name, media_id)
     except Exception:
         pass
-
     # Only record a recycle-bin entry when an actual file was moved (it is the
     # only thing recoverable). Metadata-only deletes are still captured by the
     # audit log below.

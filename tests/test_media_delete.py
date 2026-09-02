@@ -142,8 +142,6 @@ def test_delete_removes_clip_from_bins(tmp_path, tmp_db, monkeypatch):
         "deleted clip should be removed from its bin"
     assert any(str(it.get("media_id")) == "123456" for it in b2_items), \
         "unrelated clip must remain in its bin"
-
-
 def test_trash_list_and_purge(tmp_path, tmp_db, monkeypatch):
     _set_env(tmp_path, monkeypatch)
     src = tmp_path / "media-in" / "clip.mp4"
