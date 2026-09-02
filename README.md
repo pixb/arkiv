@@ -143,33 +143,27 @@ automation, or let Claude/OpenClaw query your library.
 
 ### Exposing MCP to LAN
 
-The MCP server binds to `127.0.0.1` by default (loopback-only). To expose it to your LAN:
+The MCP server binds to `0.0.0.0` by default and the `arkiv-mcp` service
+publishes port `8502` on the host — arkiv's deployment model is "one machine
+runs arkiv, the rest of the LAN connects via MCP clients (Claude Desktop/
+Code, etc.)", and this works out of the box. Configure your MCP client
+(e.g. Claude Desktop) to connect to `http://<host-ip>:8502/sse` with the
+arkiv `ui-test` token.
 
-1. **Set the bind address** in `docker-compose.yml`:
-   ```yaml
-   arkiv-mcp:
-     environment:
-       - ARKIV_MCP_BIND=0.0.0.0  # Listen on all interfaces
-   ```
+**Security model:** every request must carry a valid arkiv token via the
+`Authorization: Bearer <token>` header. The token is the only thing between
+a caller and the library — there is no anonymous read path. See
+[docs/api.md](docs/api.md) for token minting and `python arkiv_token.py --help`.
 
-2. **Uncomment the ports mapping**:
-   ```yaml
-   arkiv-mcp:
-     ports:
-       - "8502:8502"
-   ```
+**Locking MCP down to localhost** (e.g. you SSH into the host to run MCP
+clients locally):
+1. Edit `docker-compose.yml` and set `ARKIV_MCP_BIND=127.0.0.1`
+2. Comment out the `ports:` mapping under `arkiv-mcp:`
+3. `docker compose up -d arkiv-mcp`
 
-3. **Restart the service**:
-   ```bash
-   docker compose up -d arkiv-mcp
-   ```
-
-4. **Configure your MCP client** (e.g., Claude Desktop) to connect to `http://<your-server-ip>:8502`.
-
-**Security notes:**
-- The MCP server is **read-only** — no ingest/delete operations are exposed.
-- Use a **VPN or firewall** to restrict access; never expose to the public internet.
-- All requests require a valid arkiv token via `Authorization: Bearer <token>` header.
+**Do not** publish port 8502 to the public internet. The server is read-only
+(no ingest/delete) but a leaked token is still a full library dump. Use a
+VPN/tailnet/firewall if you need off-LAN access.
 
 ## Quick Start
 
