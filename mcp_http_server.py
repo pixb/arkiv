@@ -9,7 +9,11 @@ Run (as the `arkiv-mcp` compose service):
     python mcp_http_server.py
 
 Env:
-    ARKIV_MCP_BIND    bind address   (default 127.0.0.1 — LAN exposure is opt-in)
+    ARKIV_MCP_BIND    bind address   (default 0.0.0.0 — arkiv is LAN-hosted;
+                                      the token gate is the security boundary. To
+                                      lock down to localhost, set this to
+                                      127.0.0.1 and remove the ports: mapping
+                                      from docker-compose.yml)
     ARKIV_MCP_PORT    listen port    (default 8502)
     ARKIV_DB_PATH     sqlite db path (must match the arkiv service; token store lives here)
     ARKIV_CHROMA_PATH chroma dir     (for semantic search)
@@ -20,10 +24,13 @@ browser history — never accept it as a query param). We reuse
 auth.resolve_raw_token — the exact same token store + IP-allowlist + expiry as
 the HTTP API — so the existing `ui-test` token works unchanged.
 
-Security: this server is token-gated and loopback-bound by default. To expose it
-to the LAN you must deliberately set ARKIV_MCP_BIND=0.0.0.0; even then, never
-publish 8502 to the public internet (use a VPN/firewall). Read-only tools only;
-no ingest/delete is ever exposed.
+Security: this server is token-gated and LAN-bound by default. The token gate
+is the real security boundary, not the bind address: every request must carry
+Authorization: Bearer <token> and the token store is shared with the main HTTP
+API. To lock MCP down to localhost (e.g. you SSH into the host to run MCP
+clients locally), set ARKIV_MCP_BIND=127.0.0.1 and remove the ports: mapping
+from docker-compose.yml. Never publish 8502 to the public internet. Read-only
+tools only; no ingest/delete is ever exposed.
 """
 from __future__ import annotations
 
@@ -35,7 +42,7 @@ from fastapi import HTTPException
 import auth
 import mcp_server
 
-BIND = os.getenv("ARKIV_MCP_BIND", "127.0.0.1")
+BIND = os.getenv("ARKIV_MCP_BIND", "0.0.0.0")
 PORT = int(os.getenv("ARKIV_MCP_PORT", "8502"))
 
 

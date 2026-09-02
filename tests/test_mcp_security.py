@@ -2,7 +2,7 @@
 
 These guard the three security invariants introduced in this PR and
 prevent accidental regressions (e.g. someone re-enabling DNS rebinding
-protection, switching BIND back to 0.0.0.0, or restoring ?token= auth).
+protection, switching BIND back to 127.0.0.1, or restoring ?token= auth).
 
 Why these tests skip on missing mcp / Python <3.10:
 - `mcp` is a hard runtime dep of `mcp_server.py` and `mcp_http_server.py`,
@@ -34,17 +34,17 @@ def test_mcp_server_uses_disabled_dns_rebinding_protection():
     assert sec.enable_dns_rebinding_protection is False
 
 
-def test_mcp_http_server_binds_to_loopback_by_default():
-    """mcp_http_server must default-bind to 127.0.0.1.
+def test_mcp_http_server_binds_to_lan_by_default():
+    """mcp_http_server must default-bind to 0.0.0.0.
 
-    LAN exposure must be an opt-in via ARKIV_MCP_BIND=0.0.0.0, not the
-    default — a `docker compose up` shouldn't hand the LAN full read
-    access to the media library.
+    arkiv's deployment model is "one machine runs arkiv, the rest of the LAN
+    connects via MCP clients". Loopback-bind must be an opt-in via
+    ARKIV_MCP_BIND=127.0.0.1, not the default.
     """
     import importlib
     import mcp_http_server
     importlib.reload(mcp_http_server)
-    assert mcp_http_server.BIND == "127.0.0.1"
+    assert mcp_http_server.BIND == "0.0.0.0"
 
 
 def test_mcp_http_server_rejects_url_token():
