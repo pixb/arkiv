@@ -337,3 +337,80 @@ def test_assert_collection_compatible_legacy_matching_dim_ok():
             return {"embeddings": [[0.1] * vectordb.EMBED_DIM]}
 
     vectordb._assert_collection_compatible(LegacyCol())  # matching dim — no raise
+
+
+def test_chroma_staleness_detects_mtime_change(tmp_path, monkeypatch):
+    """pixb/arkiv#2: _check_chroma_staleness must detect when chroma.sqlite3
+    is modified by an external process and trigger a cache refresh."""
+    vectordb = importlib.import_module("vectordb")
+
+    # Point CHROMA_PATH to a temp dir
+    monkeypatch.setattr(vectordb, "CHROMA_PATH", tmp_path)
+
+    # Record a fake initial mtime
+    vectordb._CHROMA_DB_MTIME = 0.0
+
+    # No chroma.sqlite3 yet — should be a no-op (OSError caught)
+    vectordb._check_chroma_staleness()
+    assert vectordb._CHROMA_DB_MTIME == 0.0  # unchanged
+
+    # Create chroma.sqlite3
+    db_file = tmp_path / "chroma.sqlite3"
+    db_file.write_text("fake")
+
+    # First call: detects new mtime, should refresh
+    calls = {"n": 0}
+    original = getattr(vectordb, "_check_chroma_staleness", None)
+
+    # Monkeypatch SharedSystemClient.clear_system_cache to count calls
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+        _orig_clear = SharedSystemClient.clear_system_cache
+        SharedSystemClient.clear_system_cache = lambda self: calls.__setitem__("n", calls["n"] + 1)
+    except Exception:
+        _orig_clear = None
+
+    try:
+        vectordb._check_chroma_staleness()
+        assert vectordb._CHROMA_DB_MTIME > 0
+        if _orig_clear is not None:
+            assert calls["n"] == 1  # cache was cleared once
+    finally:
+        if _orig_clear is not None:
+            SharedSystemClient.clear_system_cache = _orig_clear
+
+    # Second call: mtime unchanged — should NOT trigger refresh
+    calls["n"] = 0
+    try:
+        if _orig_clear is not None:
+            SharedSystemClient.clear_system_cache = lambda self: calls.__setitem__("n", calls["n"] + 1)
+        vectordb._check_chroma_staleness()
+        if _orig_clear is not None:
+            assert calls["n"] == 0  # no refresh needed
+    finally:
+        if _orig_clear is not None:
+            SharedSystemClient.clear_system_cache = _orig_clear
+
+
+def test_chroma_staleness_resets_on_file_update(tmp_path, monkeypatch):
+    """pixb/arkiv#2: touching chroma.sqlite3 must trigger a second refresh."""
+    vectordb = importlib.import_module("vectordb")
+    monkeypatch.setattr(vectordb, "CHROMA_PATH", tmp_path)
+
+    db_file = tmp_path / "chroma.sqlite3"
+    db_file.write_text("v1")
+    vectordb._CHROMA_DB_MTIME = 0.0
+
+    # First call: records mtime
+    vectordb._check_chroma_staleness()
+    mtime1 = vectordb._CHROMA_DB_MTIME
+    assert mtime1 > 0
+
+    # Simulate external write
+    import time
+    time.sleep(0.01)
+    db_file.write_text("v2")
+
+    # Second call: mtime changed → should refresh
+    vectordb._check_chroma_staleness()
+    assert vectordb._CHROMA_DB_MTIME != mtime1
