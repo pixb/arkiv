@@ -206,6 +206,34 @@ def _assert_collection_compatible(col) -> None:
 # instances. Serialize client + collection acquisition behind one lock.
 _CHROMA_LOCK = threading.Lock()
 
+# Cross-process HNSW staleness detection (pixb/arkiv#2): chromadb's
+# SharedSystemClient caches the PersistentClient per-process.  When embed.py
+# or MCP writes via a *separate* OS process the parent uvicorn's in-memory
+# HNSW index goes stale.  Track chroma.sqlite3's mtime so the next
+# get_collection() call detects the external write and drops the stale cache.
+_CHROMA_DB_MTIME: float = 0.0
+
+
+def _check_chroma_staleness():
+    """Detect external writes to chroma.sqlite3 and refresh the in-process cache.
+
+    Must be called while holding _CHROMA_LOCK (from get_collection).  Clears
+    the SharedSystemClient cache inline — calling clear_client_cache() would
+    deadlock because it also acquires _CHROMA_LOCK."""
+    global _CHROMA_DB_MTIME
+    db_file = CHROMA_PATH / "chroma.sqlite3"
+    try:
+        current = db_file.stat().st_mtime
+    except OSError:
+        return
+    if current != _CHROMA_DB_MTIME:
+        _CHROMA_DB_MTIME = current
+        try:
+            from chromadb.api.shared_system_client import SharedSystemClient
+            SharedSystemClient.clear_system_cache()
+        except Exception:
+            pass
+
 
 def clear_client_cache():
     """Drop chromadb's process-global System cache so the NEXT PersistentClient(path)
@@ -236,6 +264,7 @@ def get_collection(reset: bool = False):
         return col
 
     with _CHROMA_LOCK:  # audit M11
+        _check_chroma_staleness()
         client = chromadb.PersistentClient(path=str(CHROMA_PATH))
         if reset:
             try:

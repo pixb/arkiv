@@ -104,6 +104,8 @@ def _rebuild_embeddings():
     except Exception as e:
         print(f"[embed] rebuild failed: {e}")
     finally:
+        import vectordb as _vdb
+        _vdb.clear_client_cache()  # pixb/arkiv#2: refresh after subprocess write
         embed_rebuild.release()  # audit M8: always free the single-flight slot
 
 # ── Ingest single-flight guard ────────────────────────────────────────────────
