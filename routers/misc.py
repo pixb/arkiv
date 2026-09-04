@@ -155,9 +155,12 @@ def stream_media(media_id: int, _tok: dict = Depends(require_scopes("videos_read
     # video codec, so forcing a 409 here would break image preview in the Inspector
     # (the <img> points at this same /api/stream endpoint and would load a 409 body).
     # `kind` is not a DB column; the frontend derives it from the file extension, so
-    # we use the same signal here (image extensions never need a playback proxy).
+    # we use the same signal here (image/audio extensions never need a playback proxy).
+    # Audio files may have an embedded image stream (e.g. MP3 album art) that ffprobe
+    # detects as mjpeg — this is not video content and must not trigger a 409.
     is_image = file_path.suffix.lower() in mediatypes.IMAGE_EXT
-    if not is_image and stored_codec and (
+    is_audio = file_path.suffix.lower() in mediatypes.AUDIO_EXT
+    if not is_image and not is_audio and stored_codec and (
         stored_codec in codec.PROXY_CODECS or not codec.is_browser_playable_video(stored_codec)
     ):
         return JSONResponse(
