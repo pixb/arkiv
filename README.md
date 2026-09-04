@@ -141,29 +141,29 @@ automation, or let Claude/OpenClaw query your library.
 
 → **[API auth, token scopes, and the library Chat (RAG) endpoint: docs/api.md](docs/api.md)**
 
-### Exposing MCP to LAN
+### MCP over the LAN
 
-The MCP server binds to `0.0.0.0` by default and the `arkiv-mcp` service
-publishes port `8502` on the host — arkiv's deployment model is "one machine
-runs arkiv, the rest of the LAN connects via MCP clients (Claude Desktop/
-Code, etc.)", and this works out of the box. Configure your MCP client
-(e.g. Claude Desktop) to connect to `http://<host-ip>:8502/sse` with the
-arkiv `ui-test` token.
+The default MCP server speaks **stdio**, which needs a local process and local access to
+the database — neither of which crosses a network. `mcp_http_server.py` serves the same
+read-only tools over **HTTP/SSE** so a client on another machine can query the library:
 
-**Security model:** every request must carry a valid arkiv token via the
-`Authorization: Bearer <token>` header. The token is the only thing between
-a caller and the library — there is no anonymous read path. See
-[docs/api.md](docs/api.md) for token minting and `python arkiv_token.py --help`.
+```bash
+ARKIV_MCP_BIND=0.0.0.0 \
+ARKIV_MCP_ALLOWED_HOSTS=192.168.1.50:8502 \
+python mcp_http_server.py            # or: the arkiv-mcp service in docker compose
+```
 
-**Locking MCP down to localhost** (e.g. you SSH into the host to run MCP
-clients locally):
-1. Edit `docker-compose.yml` and set `ARKIV_MCP_BIND=127.0.0.1`
-2. Comment out the `ports:` mapping under `arkiv-mcp:`
-3. `docker compose up -d arkiv-mcp`
+Point your MCP client at `http://<host>:8502/sse` with an `Authorization: Bearer <token>`
+header. Tokens are the same ones the REST API uses, so revoking one revokes it everywhere.
 
-**Do not** publish port 8502 to the public internet. The server is read-only
-(no ingest/delete) but a leaked token is still a full library dump. Use a
-VPN/tailnet/firewall if you need off-LAN access.
+> 🔴 **`ARKIV_MCP_ALLOWED_HOSTS` is not optional for LAN use.** The MCP SDK ships DNS
+> rebinding protection with a loopback-only allow-list, so a request arriving as
+> `Host: 192.168.1.50:8502` is refused with **421 Misdirected Request** before arkiv sees
+> it. List the address your clients dial. Values are *added* to the loopback defaults, so
+> `localhost` keeps working; `*` switches the host check off entirely.
+>
+> The bind address defaults to `127.0.0.1` — publishing an MCP endpoint to the network is
+> a decision, not a default.
 
 ## Quick Start
 
@@ -256,11 +256,33 @@ $env:PYTHONUTF8=1; python health.py
 ```bash
 git clone https://github.com/vulture-s/arkiv.git
 cd arkiv
-docker compose up -d
+
+# Point ARKIV_MEDIA_DIR at your footage — a NAS share, an external drive,
+# anything. It is mounted at /media inside the container, which is the path
+# you give arkiv when you add a library. Defaults to ./media.
+ARKIV_MEDIA_DIR=/path/to/your/footage docker compose up -d
 # Open http://localhost:8501
 ```
 
 > Models are pulled automatically inside the Ollama container on first run (may take a few minutes).
+
+Uploads through the web UI land in `./media-in` on the host. Both that and your
+library are bind-mounted, so nothing you add survives only inside the container.
+
+#### Split-host: arkiv here, Ollama on the GPU box
+
+The default file runs arkiv and Ollama together. If the machine with the GPU is a
+different one on your LAN, use the sibling file instead — Ollama on that machine
+needs `OLLAMA_HOST=0.0.0.0` and the models pulled first:
+
+```bash
+ARKIV_OLLAMA_URL=http://192.168.1.50:11434 \
+ARKIV_MEDIA_DIR=/Volumes/footage \
+docker compose -f docker-compose.remote-ollama.yml up -d
+```
+
+Full notes, including why this is a separate file rather than an override, are at
+the top of [`docker-compose.remote-ollama.yml`](docker-compose.remote-ollama.yml).
 
 <details>
 <summary>Upgrading from an old version (v0.3.0 → v0.3.1 storage layout migration)</summary>
